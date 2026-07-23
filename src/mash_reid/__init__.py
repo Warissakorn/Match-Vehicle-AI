@@ -10,6 +10,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "frame_loader",
+    "video_extractor",
     "detector",
     "embedder",
     "matcher",
