@@ -26,7 +26,7 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
 import config  # noqa: E402
-from mash_reid import matcher, pipeline  # noqa: E402
+from mash_reid import logging_setup, matcher, pipeline, video_extractor  # noqa: E402
 from mash_reid.matcher import VehicleRecord  # noqa: E402
 
 THUMB_SIZE = (140, 110)
@@ -135,14 +135,17 @@ class ReIDApp(ttk.Frame):
         top = ttk.Frame(self)
         top.pack(fill="x", pady=(0, 6))
 
-        # Folder pickers
-        for label, var in (("Point A folder", self.dir_a), ("Point B folder", self.dir_b)):
+        # Folder pickers (with an "extract frames from a video" shortcut)
+        for label, var, pt in (("Point A folder", self.dir_a, "A"),
+                               ("Point B folder", self.dir_b, "B")):
             row = ttk.Frame(top)
             row.pack(fill="x", pady=2)
             ttk.Label(row, text=label, width=14).pack(side="left")
             ttk.Entry(row, textvariable=var).pack(side="left", fill="x", expand=True, padx=4)
             ttk.Button(row, text="Browse...",
                        command=lambda v=var: self._browse(v)).pack(side="left")
+            ttk.Button(row, text="From video...",
+                       command=lambda v=var, p=pt: self._extract_from_video(v, p)).pack(side="left", padx=(4, 0))
 
         # Sliders / options
         opts = ttk.Frame(top)
@@ -202,6 +205,10 @@ class ReIDApp(ttk.Frame):
         path = filedialog.askdirectory()
         if path:
             var.set(path)
+
+    def _extract_from_video(self, folder_var, point):
+        """Open a dialog to extract frames from a video into a point folder."""
+        VideoExtractDialog(self, point, folder_var)
 
     def _current_match_config(self) -> config.MatchConfig:
         return config.MatchConfig(
@@ -306,11 +313,167 @@ class ReIDApp(ttk.Frame):
             self._on_select_a(rec_a)
 
 
+class VideoExtractDialog(tk.Toplevel):
+    """Modal dialog: pick a video, extract timestamped frames for one point.
+
+    On success the output folder is written back into the point's folder entry
+    so the user can immediately Process it.
+    """
+
+    def __init__(self, parent, point, folder_var):
+        super().__init__(parent)
+        self.title(f"Extract frames for point {point}")
+        self.point = point
+        self.folder_var = folder_var
+        self._queue: queue.Queue = queue.Queue()
+
+        self.video_path = tk.StringVar()
+        self.out_dir = tk.StringVar()
+        self.interval = tk.DoubleVar(value=1.0)
+        self.start_time = tk.StringVar()
+        self.status = tk.StringVar(value="Choose a video to begin.")
+
+        self._build()
+        self.transient(parent)
+        self.grab_set()
+
+    def _build(self):
+        pad = {"padx": 8, "pady": 4}
+
+        vrow = ttk.Frame(self)
+        vrow.pack(fill="x", **pad)
+        ttk.Label(vrow, text="Video", width=10).pack(side="left")
+        ttk.Entry(vrow, textvariable=self.video_path, width=48).pack(side="left", fill="x", expand=True)
+        ttk.Button(vrow, text="Browse...", command=self._pick_video).pack(side="left", padx=4)
+
+        orow = ttk.Frame(self)
+        orow.pack(fill="x", **pad)
+        ttk.Label(orow, text="Output", width=10).pack(side="left")
+        ttk.Entry(orow, textvariable=self.out_dir, width=48).pack(side="left", fill="x", expand=True)
+        ttk.Button(orow, text="Browse...", command=self._pick_out).pack(side="left", padx=4)
+
+        srow = ttk.Frame(self)
+        srow.pack(fill="x", **pad)
+        ttk.Label(srow, text="Start time", width=10).pack(side="left")
+        ttk.Entry(srow, textvariable=self.start_time, width=24).pack(side="left")
+        ttk.Label(srow, text="(auto from filename; edit as YYYY-MM-DD HH:MM:SS)").pack(side="left", padx=6)
+
+        irow = ttk.Frame(self)
+        irow.pack(fill="x", **pad)
+        ttk.Label(irow, text="Interval (s)", width=10).pack(side="left")
+        ttk.Spinbox(irow, from_=0.1, to=60.0, increment=0.5, textvariable=self.interval,
+                    width=8).pack(side="left")
+
+        ttk.Label(self, textvariable=self.status, relief="sunken", anchor="w").pack(fill="x", **pad)
+
+        brow = ttk.Frame(self)
+        brow.pack(fill="x", **pad)
+        self._extract_btn = ttk.Button(brow, text="Extract", command=self._start)
+        self._extract_btn.pack(side="right")
+        ttk.Button(brow, text="Close", command=self.destroy).pack(side="right", padx=4)
+
+    def _pick_video(self):
+        path = filedialog.askopenfilename(
+            parent=self,
+            filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv *.webm"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        self.video_path.set(path)
+        # Prefill output folder and the start time parsed from the filename.
+        self.out_dir.set(video_extractor.default_output_dir(path, self.point))
+        start, source = video_extractor.resolve_start_time(path, None)
+        self.start_time.set(start.strftime("%Y-%m-%d %H:%M:%S"))
+        self.status.set(f"Start time from {source}. Adjust if needed, then Extract.")
+
+    def _pick_out(self):
+        path = filedialog.askdirectory(parent=self)
+        if path:
+            self.out_dir.set(path)
+
+    def _parse_start(self):
+        text = self.start_time.get().strip()
+        if not text:
+            return None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y%m%d_%H%M%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                from datetime import datetime
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        raise ValueError(f"Bad start time '{text}'. Use YYYY-MM-DD HH:MM:SS.")
+
+    def _start(self):
+        video = self.video_path.get().strip()
+        out = self.out_dir.get().strip()
+        if not os.path.isfile(video):
+            messagebox.showerror("No video", "Please choose a valid video file.", parent=self)
+            return
+        if not out:
+            messagebox.showerror("No output", "Please choose an output folder.", parent=self)
+            return
+        try:
+            start_dt = self._parse_start()
+        except ValueError as exc:
+            messagebox.showerror("Invalid start time", str(exc), parent=self)
+            return
+
+        self._extract_btn.config(state="disabled")
+        self.status.set("Extracting frames...")
+        thread = threading.Thread(
+            target=self._worker, args=(video, out, start_dt, self.interval.get()), daemon=True
+        )
+        thread.start()
+        self.after(100, self._poll)
+
+    def _worker(self, video, out, start_dt, interval):
+        try:
+            def progress(done, total, msg):
+                total_str = str(total) if total else "?"
+                self._queue.put(("status", f"[{done}/{total_str}] {msg}"))
+
+            written = video_extractor.extract_frames(
+                video, out, self.point, interval_seconds=interval,
+                start_time=start_dt, progress=progress,
+            )
+            self._queue.put(("done", (out, len(written))))
+        except Exception as exc:
+            self._queue.put(("error", str(exc)))
+
+    def _poll(self):
+        try:
+            while True:
+                kind, payload = self._queue.get_nowait()
+                if kind == "status":
+                    self.status.set(payload)
+                elif kind == "error":
+                    self._extract_btn.config(state="normal")
+                    messagebox.showerror("Extraction failed", payload, parent=self)
+                    return
+                elif kind == "done":
+                    out, count = payload
+                    self._extract_btn.config(state="normal")
+                    self.folder_var.set(out)  # feed it back to the main window
+                    self.status.set(f"Done: {count} frames -> {out}")
+                    messagebox.showinfo(
+                        "Extraction complete",
+                        f"Wrote {count} frames to:\n{out}\n\n"
+                        f"This folder is now set as point {self.point}.",
+                        parent=self,
+                    )
+                    return
+        except queue.Empty:
+            pass
+        self.after(100, self._poll)
+
+
 def main():
+    log_path = logging_setup.setup_logging()
     root = tk.Tk()
     root.title("Mash-Object-AI  |  Cross-Point Vehicle Re-ID")
     root.geometry("1100x760")
-    ReIDApp(root)
+    app = ReIDApp(root)
+    app.status.set(f"Ready. Logging to {log_path}")
     root.mainloop()
 
 

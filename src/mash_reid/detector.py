@@ -7,11 +7,14 @@ The cropped image is what the embedder turns into a Re-ID feature vector.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
 
 import config
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -40,9 +43,17 @@ class VehicleDetector:
         if self._model is None:
             from ultralytics import YOLO  # heavy import, deferred
 
-            self._model = YOLO(self.cfg.yolo_weights)
+            log.info("Loading YOLO weights '%s' (conf>=%.2f, classes=%s)",
+                     self.cfg.yolo_weights, self.cfg.detection_conf,
+                     list(self.cfg.vehicle_class_ids))
+            try:
+                self._model = YOLO(self.cfg.yolo_weights)
+            except Exception:
+                log.exception("Failed to load YOLO weights '%s'", self.cfg.yolo_weights)
+                raise
             if self.cfg.device:
                 self._model.to(self.cfg.device)
+            log.info("YOLO model ready")
         return self._model
 
     def detect(self, image: np.ndarray) -> list[Detection]:

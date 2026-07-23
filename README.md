@@ -23,6 +23,7 @@ frames @ B ┘                                                           │
 
 | Stage | Module | What it does |
 |-------|--------|--------------|
+| Extract | `src/mash_reid/video_extractor.py` | (optional) Cuts timestamped still frames from A/B videos |
 | Load  | `src/mash_reid/frame_loader.py` | Reads images, gets each frame's timestamp from filename / EXIF / mtime |
 | Detect | `src/mash_reid/detector.py` | YOLOv8 finds cars, motorcycles, buses, trucks and crops them |
 | Embed | `src/mash_reid/embedder.py` | Each crop → an L2-normalized appearance vector (ResNet50 by default) |
@@ -65,6 +66,27 @@ pip install -r requirements.txt
 Model weights (YOLOv8n ≈ 6 MB, ResNet50 ≈ 100 MB) download automatically on
 first run and are cached afterwards.
 
+## Video input
+
+If you have **videos** of points A and B rather than pre-cut frames, extract
+timestamped stills first. The video's start time is read from its filename
+(e.g. `A_20260723_101500.mp4`); each frame's real-world time is then
+`start_time + frame_index / fps`, so the travel-time gate keeps working.
+
+**GUI:** click **From video...** next to a point's folder, pick the video, set
+the interval, and extract — the output folder is filled in for you.
+
+**CLI:**
+
+```bash
+python extract_video.py --video A_20260723_101500.mp4 --point A --interval 1.0
+python extract_video.py --video B_20260723_101745.mp4 --point B --interval 1.0
+```
+
+Then point the app at the two output folders. Useful flags: `--out` (output
+folder), `--start-time "YYYY-MM-DD HH:MM:SS"` (override the filename time),
+`--ext`.
+
 ## Usage
 
 ### Desktop GUI (Tkinter)
@@ -73,7 +95,8 @@ first run and are cached afterwards.
 python app/gui.py          # or just ./run.sh
 ```
 
-1. Browse to the **Point A** and **Point B** frame folders.
+1. Browse to the **Point A** and **Point B** frame folders — or click
+   **From video...** to extract frames from a video first.
 2. Tune sliders if needed (similarity threshold, detection confidence, travel
    window).
 3. Click **Process**. First run downloads the models.
@@ -93,6 +116,20 @@ python cli.py --dir-a samples/pointA --dir-b samples/pointB \
 Useful flags: `--conf` (detection confidence), `--min-travel`/`--max-travel`
 (seconds), `--no-time-gate`, `--one-to-one` (force a unique A↔B assignment),
 `--no-cache`.
+
+## Logs
+
+Every run writes a timestamped log file under `logs/` (e.g.
+`logs/mash_reid_20260723_101530.log`) for later analysis. The file captures full
+DEBUG detail — frames loaded, per-frame detection counts, unreadable images,
+model load, extraction stats, and errors — while the console shows INFO.
+
+- CLIs: `--log-dir <dir>` changes the folder, `--verbose` also prints DEBUG to
+  the console.
+- The GUI logs automatically and shows the log path in its status bar.
+
+If detection finds nothing, the log tells you why (e.g. "could not read image
+…" for every frame points to an unreadable folder). Log files are git-ignored.
 
 ## Filename timestamp convention
 
