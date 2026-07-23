@@ -147,6 +147,56 @@ def _match_top_k(
     return results
 
 
+def cluster_same_point(
+    records: list[VehicleRecord],
+    similarity_threshold: float = config.DEFAULT_SAME_POINT_SIMILARITY_THRESHOLD,
+) -> dict[int, int]:
+    """Group records from ONE point that likely show the same physical vehicle.
+
+    The same vehicle can be detected in several frames at a single point (e.g.
+    waiting, circling back). This groups such detections by appearance only —
+    no time gate, since all detections are already known to be at the same
+    point, so recording order doesn't constrain which ones can match.
+
+    Returns ``{record_id: cluster_id}`` with every record assigned a cluster,
+    including singletons (cluster ids are 0-indexed in first-seen order).
+    """
+    n = len(records)
+    if n == 0:
+        return {}
+
+    emb = np.stack([r.embedding for r in records])
+    sim = cosine_similarity_matrix(emb, emb)
+
+    # Union-find over indices connected by similarity >= threshold.
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if sim[i, j] >= similarity_threshold:
+                union(i, j)
+
+    root_to_cluster: dict[int, int] = {}
+    result: dict[int, int] = {}
+    for i, rec in enumerate(records):
+        root = find(i)
+        if root not in root_to_cluster:
+            root_to_cluster[root] = len(root_to_cluster)
+        result[rec.record_id] = root_to_cluster[root]
+    return result
+
+
 def _match_one_to_one(
     records_a: list[VehicleRecord],
     records_b: list[VehicleRecord],

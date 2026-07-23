@@ -34,6 +34,13 @@ The **travel-time gate** encodes physical reality: a vehicle passes A *before*
 B, within a configurable window (e.g. 0–600 s). This filters out visually
 similar but temporally impossible pairs.
 
+`matcher.py` also groups **repeat sightings of the same vehicle within one
+point** (e.g. a car circling back past the same camera) via
+`cluster_same_point` — appearance-only, no time gate, since all detections are
+already known to be at that point. Every detection still appears in the
+GUI/CLI output; repeats are just tagged so they read as one vehicle instead of
+several.
+
 ## Quick start (one-click launcher)
 
 The easiest way to run the app. The launcher creates a local virtual
@@ -100,12 +107,39 @@ python app/gui.py          # or just ./run.sh
 2. Pick a **Detection model** from the dropdown (or click **Manage models...**
    to download / update weights). Tune sliders if needed (similarity threshold,
    detection confidence, travel window).
-3. Click **Process**. First run downloads the models.
+3. Click **Process**. First run downloads the models. The right panel starts by
+   showing **every vehicle detected at point B** — useful for browsing before
+   you've picked anything from A ("Show all B" returns to this view any time).
 4. Click a vehicle in the A gallery → its best B-matches appear on the right
-   with similarity scores. Double-click any thumbnail to view the full frame
-   with the bounding box.
+   instead, with similarity scores. Click **✓ Same** / **✗ Diff** on a candidate
+   to label it as training data (saved under `training_data/`, see below).
+   Double-click any thumbnail to view the full frame with the bounding box.
+
+Vehicles seen more than once at the *same* point (e.g. a car circling back past
+the same camera) are tagged `•GrpN(xK)` in their caption — every detection is
+still shown, the tag just flags that they're believed to be one vehicle.
 
 Slider and toggle changes re-match instantly (no re-detection needed).
+
+### Collecting training data
+
+Every time you click **✓ Same** or **✗ Diff** on a proposed A/B match in the
+GUI, the pair is saved under `training_data/` for later use fine-tuning or
+evaluating a Re-ID model:
+
+```
+training_data/
+  manifest.csv     # one row per labeled pair: paths, bboxes, timestamps, label, similarity
+  positive/        # label = same vehicle
+    <pair_id>_A.jpg
+    <pair_id>_B.jpg
+  negative/        # label = different vehicle
+    <pair_id>_A.jpg
+    <pair_id>_B.jpg
+```
+
+The status bar shows a running count of labeled pairs collected so far this
+session. `training_data/` is git-ignored.
 
 ### Command line
 

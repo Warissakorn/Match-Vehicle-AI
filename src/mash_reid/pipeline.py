@@ -20,6 +20,7 @@ import config
 from mash_reid import frame_loader
 from mash_reid.detector import VehicleDetector
 from mash_reid.embedder import Embedder, get_default_embedder
+from mash_reid.image_io import imread_unicode as _imread_unicode
 from mash_reid.matcher import VehicleRecord
 
 log = logging.getLogger(__name__)
@@ -33,25 +34,6 @@ class PointResult:
     folder: str
     records: list[VehicleRecord]
     frame_count: int
-
-
-def _imread_unicode(cv2, path: str):
-    """Read an image, supporting non-ASCII paths; returns a BGR array or None.
-
-    ``cv2.imread`` returns None (no error) for paths with non-ASCII characters
-    (e.g. Thai) on Windows, which made detection silently find nothing when
-    frames lived in such a folder. Reading the bytes with Python's ``open`` and
-    decoding via ``cv2.imdecode`` handles Unicode paths on every platform.
-    """
-    try:
-        with open(path, "rb") as fh:
-            data = fh.read()
-    except OSError:
-        return None
-    if not data:
-        return None
-    arr = np.frombuffer(data, dtype=np.uint8)
-    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
 
 def _cache_key(folder: str, cfg: config.PipelineConfig) -> str:

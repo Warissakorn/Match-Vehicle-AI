@@ -4,9 +4,17 @@ Workflow:
     1. Pick the folder of frames for point A and for point B.
     2. Adjust thresholds / travel-time window if needed.
     3. Click "Process" -- detection + embedding run in a background thread.
-    4. Click a vehicle in the A gallery -> its best B-matches appear on the
-       right with similarity scores. Double-click any thumbnail to see the full
-       frame with the bounding box drawn.
+    4. Before selecting anything from A, the right panel shows *every* vehicle
+       detected at point B ("Show all B" returns to this view any time).
+    5. Click a vehicle in the A gallery -> its best B-matches appear on the
+       right instead, with similarity scores and "✓ Same" / "✗ Diff" buttons to
+       label the pair -- saved under ``training_data/`` for later model
+       training. Double-click any thumbnail to see the full frame with the
+       bounding box drawn.
+
+Repeat sightings of the same vehicle within one point (e.g. circling back past
+the same camera) are tagged "•GrpN(xK)" in their caption so duplicates read as
+one vehicle without hiding any individual detection.
 
 Run with:  python app/gui.py
 """
@@ -18,6 +26,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
+from collections import Counter
 from tkinter import filedialog, messagebox, ttk
 
 # Make ``config`` (project root) and the ``mash_reid`` package importable.
@@ -32,6 +41,7 @@ from mash_reid import (  # noqa: E402
     model_manager,
     model_registry,
     pipeline,
+    training_export,
     video_extractor,
 )
 from mash_reid.matcher import VehicleRecord  # noqa: E402
@@ -96,7 +106,13 @@ class ScrollableThumbs(ttk.Frame):
             child.destroy()
         self._refs.clear()
 
-    def add_card(self, record: VehicleRecord, caption: str, on_click, on_double):
+    def add_card(self, record: VehicleRecord, caption: str, on_click, on_double,
+                on_confirm=None, on_reject=None):
+        """Add a thumbnail card. If ``on_confirm``/``on_reject`` (no-arg
+        callables) are given, a "Same"/"Different" button pair is shown below
+        the caption for labeling this candidate as training data; both
+        disable themselves after either is clicked.
+        """
         idx = len(self._refs)
         photo = _load_thumb(record)
         self._refs.append(photo)
@@ -110,6 +126,32 @@ class ScrollableThumbs(ttk.Frame):
         btn.bind("<Double-Button-1>", lambda e: on_double(record))
 
         ttk.Label(card, text=caption, font=("TkDefaultFont", 8)).pack()
+
+        if on_confirm or on_reject:
+            row = ttk.Frame(card)
+            row.pack(fill="x")
+            status_lbl = ttk.Label(card, text="", font=("TkDefaultFont", 7))
+            confirm_btn = ttk.Button(row, text="✓ Same", width=6)
+            reject_btn = ttk.Button(row, text="✗ Diff", width=6)
+
+            def _mark_done(text):
+                confirm_btn.config(state="disabled")
+                reject_btn.config(state="disabled")
+                status_lbl.config(text=text)
+
+            if on_confirm:
+                def _do_confirm():
+                    on_confirm()
+                    _mark_done("saved: same vehicle")
+                confirm_btn.config(command=_do_confirm)
+                confirm_btn.pack(side="left", expand=True, fill="x")
+            if on_reject:
+                def _do_reject():
+                    on_reject()
+                    _mark_done("saved: different vehicle")
+                reject_btn.config(command=_do_reject)
+                reject_btn.pack(side="left", expand=True, fill="x")
+            status_lbl.pack(fill="x")
 
 
 class ReIDApp(ttk.Frame):
@@ -136,6 +178,9 @@ class ReIDApp(ttk.Frame):
         self._res_b = None
         self._a_by_id: dict[int, VehicleRecord] = {}
         self._b_by_id: dict[int, VehicleRecord] = {}
+        self._a_clusters: dict[int, int] = {}  # record_id -> cluster id (same-point repeats)
+        self._b_clusters: dict[int, int] = {}
+        self._last_selected_a: VehicleRecord | None = None
         self._queue: queue.Queue = queue.Queue()
 
         self._build_controls()
@@ -218,12 +263,21 @@ class ReIDApp(ttk.Frame):
         panes.pack(fill="both", expand=True)
 
         left = ttk.Labelframe(panes, text="Point A vehicles (click one)")
-        right = ttk.Labelframe(panes, text="Best matches at point B")
+        right = ttk.Labelframe(panes, text="Point B vehicles")
         panes.add(left, weight=1)
         panes.add(right, weight=1)
 
         self.gallery_a = ScrollableThumbs(left, columns=2)
         self.gallery_a.pack(fill="both", expand=True)
+
+        b_toolbar = ttk.Frame(right)
+        b_toolbar.pack(fill="x")
+        self.b_view_label = tk.StringVar(value="Showing: all point B vehicles")
+        ttk.Label(b_toolbar, textvariable=self.b_view_label,
+                 font=("TkDefaultFont", 8)).pack(side="left", padx=4)
+        ttk.Button(b_toolbar, text="Show all B",
+                  command=self._show_all_b).pack(side="right", padx=4)
+
         self.gallery_b = ScrollableThumbs(right, columns=2)
         self.gallery_b.pack(fill="both", expand=True)
 
@@ -312,13 +366,29 @@ class ReIDApp(ttk.Frame):
         self._res_a, self._res_b = res_a, res_b
         self._a_by_id = {r.record_id: r for r in res_a.records}
         self._b_by_id = {r.record_id: r for r in res_b.records}
+        # Group repeat sightings of the same vehicle within each point (e.g. a
+        # car circling back past the same camera) so they read as one vehicle
+        # rather than several, while every detection still stays visible.
+        self._a_clusters = matcher.cluster_same_point(res_a.records)
+        self._b_clusters = matcher.cluster_same_point(res_b.records)
         self._process_btn.config(state="normal")
         self.status.set(
             f"A: {len(res_a.records)} vehicles / {res_a.frame_count} frames   |   "
             f"B: {len(res_b.records)} vehicles / {res_b.frame_count} frames"
         )
         self._populate_a()
-        self.gallery_b.clear()
+        self._last_selected_a = None
+        self._populate_b_all()
+
+    def _cluster_tag(self, clusters: dict[int, int], record_id: int) -> str:
+        """Return a " •GrpN(xK)" suffix when this record shares a same-point
+        cluster with other detections; empty string for a singleton.
+        """
+        cluster_id = clusters.get(record_id)
+        if cluster_id is None:
+            return ""
+        size = sum(1 for c in clusters.values() if c == cluster_id)
+        return f"  •Grp{cluster_id}(x{size})" if size > 1 else ""
 
     def _populate_a(self):
         self.gallery_a.clear()
@@ -326,13 +396,34 @@ class ReIDApp(ttk.Frame):
             return
         for rec in self._res_a.records:
             cap = f"A#{rec.record_id}  {rec.timestamp:%H:%M:%S}"
+            cap += self._cluster_tag(self._a_clusters, rec.record_id)
             self.gallery_a.add_card(rec, cap, self._on_select_a, self._on_double)
+
+    def _show_all_b(self):
+        self._last_selected_a = None
+        self._populate_b_all()
+
+    def _populate_b_all(self):
+        """Default B view: every detected vehicle at point B, grouped by
+        same-point cluster tag. Shown before any point-A vehicle is selected,
+        and reachable again afterwards via the "Show all B" button.
+        """
+        self.gallery_b.clear()
+        self.b_view_label.set("Showing: all point B vehicles")
+        if not self._res_b:
+            return
+        for rec in self._res_b.records:
+            cap = f"B#{rec.record_id}  {rec.timestamp:%H:%M:%S}"
+            cap += self._cluster_tag(self._b_clusters, rec.record_id)
+            self.gallery_b.add_card(rec, cap, lambda r: None, self._on_double)
 
     def _on_select_a(self, rec_a: VehicleRecord):
         if not self._res_b:
             return
+        self._last_selected_a = rec_a
         results = matcher.match([rec_a], self._res_b.records, self._current_match_config())
         self.gallery_b.clear()
+        self.b_view_label.set(f"Showing: matches for A#{rec_a.record_id}")
         result = results[0] if results else None
         if not result or not result.candidates:
             self.status.set(f"A#{rec_a.record_id}: no B match above threshold.")
@@ -342,8 +433,27 @@ class ReIDApp(ttk.Frame):
             rec_b = self._b_by_id[cand.b_record_id]
             dt = (rec_b.timestamp - rec_a.timestamp).total_seconds()
             cap = f"B#{rec_b.record_id}  sim={cand.similarity:.2f}  +{dt:.0f}s"
-            self.gallery_b.add_card(rec_b, cap, lambda r: None, self._on_double)
-        self._last_selected_a = rec_a
+            cap += self._cluster_tag(self._b_clusters, rec_b.record_id)
+            self.gallery_b.add_card(
+                rec_b, cap, lambda r: None, self._on_double,
+                on_confirm=lambda a=rec_a, b=rec_b, s=cand.similarity: self._label_pair(a, b, s, True),
+                on_reject=lambda a=rec_a, b=rec_b, s=cand.similarity: self._label_pair(a, b, s, False),
+            )
+
+    def _label_pair(self, rec_a: VehicleRecord, rec_b: VehicleRecord,
+                    similarity: float, same: bool) -> None:
+        """Save a user-confirmed/rejected A/B pair as labeled training data."""
+        try:
+            training_export.export_labeled_pair(
+                config.DEFAULT_TRAINING_DATA_DIR, rec_a, rec_b, same, similarity)
+        except Exception as exc:
+            messagebox.showerror("Could not save training pair", str(exc), parent=self)
+            return
+        pos, neg = training_export.count_labeled_pairs(config.DEFAULT_TRAINING_DATA_DIR)
+        self.status.set(
+            f"Saved {'match' if same else 'non-match'} to {config.DEFAULT_TRAINING_DATA_DIR}/. "
+            f"Collected so far: {pos} positive, {neg} negative."
+        )
 
     def _on_double(self, rec: VehicleRecord):
         _show_full_frame(self, rec)
@@ -351,9 +461,10 @@ class ReIDApp(ttk.Frame):
     def _rematch(self):
         # Re-run matching for the currently selected A vehicle when a slider or
         # toggle changes. No model work involved -- purely numeric, so instant.
-        rec_a = getattr(self, "_last_selected_a", None)
-        if rec_a is not None and self._res_b is not None:
-            self._on_select_a(rec_a)
+        # If nothing is selected (the "all B" default view), there is nothing
+        # threshold-dependent to refresh.
+        if self._last_selected_a is not None and self._res_b is not None:
+            self._on_select_a(self._last_selected_a)
 
 
 class VideoExtractDialog(tk.Toplevel):

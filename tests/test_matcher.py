@@ -111,3 +111,53 @@ def test_empty_gallery_yields_no_matches():
     results = matcher.match(a, [], config.MatchConfig())
     assert len(results) == 1
     assert results[0].best is None
+
+
+# --- cluster_same_point: group repeat sightings of one vehicle at one point --
+
+def test_cluster_same_point_groups_identical_embeddings():
+    # Same car photographed 3 times at point B (e.g. circling back).
+    records = [
+        _rec(0, "B", [1, 0, 0], t=0),
+        _rec(1, "B", [1, 0, 0], t=30),
+        _rec(2, "B", [1, 0, 0], t=90),
+    ]
+    clusters = matcher.cluster_same_point(records, similarity_threshold=0.8)
+    assert clusters[0] == clusters[1] == clusters[2]
+
+
+def test_cluster_same_point_separates_dissimilar_vehicles():
+    records = [
+        _rec(0, "B", [1, 0], t=0),
+        _rec(1, "B", [0, 1], t=10),  # orthogonal -> different vehicle
+    ]
+    clusters = matcher.cluster_same_point(records, similarity_threshold=0.8)
+    assert clusters[0] != clusters[1]
+
+
+def test_cluster_same_point_transitively_links_a_chain():
+    # A slightly different lighting/angle chain: 0~1 similar, 1~2 similar, but
+    # 0 and 2 alone might fall just under threshold -- union-find must still
+    # merge all three via the shared link through record 1.
+    records = [
+        _rec(0, "B", [1.0, 0.30], t=0),
+        _rec(1, "B", [1.0, 0.0], t=10),
+        _rec(2, "B", [1.0, -0.30], t=20),
+    ]
+    clusters = matcher.cluster_same_point(records, similarity_threshold=0.9)
+    assert clusters[0] == clusters[1] == clusters[2]
+
+
+def test_cluster_same_point_empty_list():
+    assert matcher.cluster_same_point([]) == {}
+
+
+def test_cluster_same_point_singleton():
+    records = [_rec(0, "B", [1, 0], t=0)]
+    assert matcher.cluster_same_point(records) == {0: 0}
+
+
+def test_cluster_same_point_uses_config_default_threshold():
+    # Sanity check the default constant is wired through without an explicit arg.
+    records = [_rec(0, "B", [1, 0], t=0), _rec(1, "B", [1, 0], t=5)]
+    assert matcher.cluster_same_point(records) == {0: 0, 1: 0}

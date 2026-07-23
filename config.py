@@ -56,6 +56,15 @@ DEFAULT_SIMILARITY_THRESHOLD = 0.6
 # How many best B-candidates to keep per A-vehicle.
 DEFAULT_TOP_K = 5
 
+# Cosine-similarity cutoff for grouping repeat detections of the same vehicle
+# WITHIN one point (e.g. a car circling back past the same camera). Higher than
+# the cross-point threshold since same-point detections share the same camera
+# angle/lighting, so genuine repeats look more alike than cross-point matches.
+DEFAULT_SAME_POINT_SIMILARITY_THRESHOLD = 0.8
+
+# Folder for confirm/reject-labeled training pairs exported from the GUI.
+DEFAULT_TRAINING_DATA_DIR = "training_data"
+
 
 @dataclass
 class MatchConfig:
