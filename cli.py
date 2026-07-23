@@ -22,7 +22,7 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
 import config  # noqa: E402
-from mash_reid import logging_setup, matcher, pipeline  # noqa: E402
+from mash_reid import logging_setup, matcher, model_registry, pipeline  # noqa: E402
 
 
 def _fmt_ts(dt) -> str:
@@ -35,6 +35,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dir-b", required=True, help="Folder of frames from point B")
     parser.add_argument("--threshold", type=float, default=config.DEFAULT_SIMILARITY_THRESHOLD)
     parser.add_argument("--top-k", type=int, default=config.DEFAULT_TOP_K)
+    parser.add_argument("--model", default=config.YOLO_WEIGHTS, metavar="KEY_OR_PATH",
+                        help="Detection model: a catalog key (%s) or a custom .pt path. "
+                             "See `python models_cli.py list`."
+                             % "/".join(model_registry.keys()))
+    parser.add_argument("--models-dir", default=None,
+                        help="Folder for downloaded weights (default: <project>/models "
+                             "or $MASH_MODELS_DIR)")
     parser.add_argument("--conf", type=float, default=config.DEFAULT_DETECTION_CONF,
                         help="YOLO detection confidence")
     parser.add_argument("--min-travel", type=float, default=0.0,
@@ -57,7 +64,9 @@ def main(argv: list[str] | None = None) -> int:
         args.log_dir, console_level=logging.DEBUG if args.verbose else logging.INFO)
     print(f"Logging to {log_path}")
 
-    pcfg = config.PipelineConfig(detection_conf=args.conf)
+    pcfg = config.PipelineConfig(
+        yolo_weights=args.model, detection_conf=args.conf, models_dir=args.models_dir)
+    print(f"Detection model: {args.model}")
     detector, embedder = pipeline.build_pipeline(pcfg)
 
     def show_progress(done, total, msg):

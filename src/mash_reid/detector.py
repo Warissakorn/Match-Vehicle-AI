@@ -43,13 +43,19 @@ class VehicleDetector:
         if self._model is None:
             from ultralytics import YOLO  # heavy import, deferred
 
+            from mash_reid import model_manager
+
+            # Catalog models are downloaded (if missing) into the shared models
+            # dir; custom paths pass straight through to YOLO.
+            weights = model_manager.resolve_weights(
+                self.cfg.yolo_weights, self.cfg.models_dir)
             log.info("Loading YOLO weights '%s' (conf>=%.2f, classes=%s)",
-                     self.cfg.yolo_weights, self.cfg.detection_conf,
+                     weights, self.cfg.detection_conf,
                      list(self.cfg.vehicle_class_ids))
             try:
-                self._model = YOLO(self.cfg.yolo_weights)
+                self._model = YOLO(weights)
             except Exception:
-                log.exception("Failed to load YOLO weights '%s'", self.cfg.yolo_weights)
+                log.exception("Failed to load YOLO weights '%s'", weights)
                 raise
             if self.cfg.device:
                 self._model.to(self.cfg.device)

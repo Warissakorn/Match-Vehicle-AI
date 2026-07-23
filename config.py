@@ -15,7 +15,10 @@ from dataclasses import dataclass, field
 #   2 = car, 3 = motorcycle, 5 = bus, 7 = truck
 VEHICLE_CLASS_IDS: tuple[int, ...] = (2, 3, 5, 7)
 
-# Default YOLO weights. yolov8n is small (~6MB) and auto-downloads on first use.
+# Default detection model. Kept in sync with ``model_registry.DEFAULT_KEY``;
+# yolov8n is small (~6MB) and auto-downloads on first use. The full list of
+# selectable models lives in ``src/mash_reid/model_registry.py`` and is managed
+# (download / update) via ``src/mash_reid/model_manager.py``.
 YOLO_WEIGHTS = "yolov8n.pt"
 
 # Minimum detection confidence to keep a vehicle box.
@@ -74,8 +77,11 @@ class MatchConfig:
 class PipelineConfig:
     """Configuration for detection + embedding over a folder of frames."""
 
-    yolo_weights: str = YOLO_WEIGHTS
+    yolo_weights: str = YOLO_WEIGHTS  # catalog key or a custom .pt path
     detection_conf: float = DEFAULT_DETECTION_CONF
     vehicle_class_ids: tuple[int, ...] = field(default_factory=lambda: VEHICLE_CLASS_IDS)
     min_box_area: int = MIN_BOX_AREA
     device: str | None = None  # None -> auto (cuda if available else cpu)
+    # Folder for downloaded weights. None -> model_manager.default_models_dir()
+    # (``<project>/models`` or $MASH_MODELS_DIR).
+    models_dir: str | None = None

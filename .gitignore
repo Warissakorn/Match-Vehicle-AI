@@ -7,7 +7,8 @@ __pycache__/
 venv/
 env/
 
-# Model weights (downloaded on first run)
+# Model weights (downloaded on first run / into the models cache)
+models/
 *.pt
 *.pth
 *.onnx
