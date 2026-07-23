@@ -33,7 +33,29 @@ The **travel-time gate** encodes physical reality: a vehicle passes A *before*
 B, within a configurable window (e.g. 0–600 s). This filters out visually
 similar but temporally impossible pairs.
 
-## Install
+## Quick start (one-click launcher)
+
+The easiest way to run the app. The launcher creates a local virtual
+environment, installs dependencies on first run, and opens the GUI. Later runs
+reuse the environment (reinstalling only if `requirements.txt` changed).
+
+**Linux / macOS**
+
+```bash
+./run.sh
+```
+
+**Windows**
+
+```bat
+run.bat
+```
+
+(double-clicking the file works on most desktops)
+
+## Manual install
+
+If you prefer to set things up yourself:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -48,7 +70,7 @@ first run and are cached afterwards.
 ### Desktop GUI (Tkinter)
 
 ```bash
-python app/gui.py
+python app/gui.py          # or just ./run.sh
 ```
 
 1. Browse to the **Point A** and **Point B** frame folders.
