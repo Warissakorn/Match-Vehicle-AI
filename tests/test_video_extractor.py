@@ -5,6 +5,7 @@ per-frame timestamp, filenames) without needing OpenCV or a real video —
 ``cv2`` is only imported inside ``extract_frames``.
 """
 
+import os
 from datetime import datetime
 
 import pytest
@@ -69,3 +70,45 @@ def test_default_output_dir_uses_video_basename():
 def test_extract_frames_missing_file_raises():
     with pytest.raises(FileNotFoundError):
         ve.extract_frames("does_not_exist.mp4", "/tmp/out", "A")
+
+
+# --- Tests that need OpenCV (skipped where cv2 isn't installed, e.g. CI) ----
+
+def _make_video(cv2, np, path, n_frames=30, fps=10, size=(64, 48)):
+    writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+    for i in range(n_frames):
+        writer.write(np.full((size[1], size[0], 3), (i * 8) % 255, np.uint8))
+    writer.release()
+
+
+def test_write_image_creates_file(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame = np.full((48, 64, 3), 120, np.uint8)
+    out = str(tmp_path / "frame.jpg")
+    ve._write_image(cv2, out, frame, "jpg")
+    assert os.path.getsize(out) > 0
+
+
+def test_write_image_handles_non_ascii_path(tmp_path):
+    # The bug this fixes: cv2.imwrite silently fails on non-ASCII (e.g. Thai)
+    # paths on Windows. The imencode+open path must produce a real file.
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    thai_dir = tmp_path / "กล้องจุดA"
+    thai_dir.mkdir()
+    frame = np.full((48, 64, 3), 200, np.uint8)
+    out = str(thai_dir / "A_20260723_101500_000000.jpg")
+    ve._write_image(cv2, out, frame, "jpg")
+    assert os.path.getsize(out) > 0
+
+
+def test_extract_frames_writes_files_into_non_ascii_output(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    vid = str(tmp_path / "A_20260723_101500.mp4")
+    _make_video(cv2, np, vid)
+    out_dir = str(tmp_path / "ผลลัพธ์จุดA")  # non-ASCII output folder
+    written = ve.extract_frames(vid, out_dir, "A", interval_seconds=1.0)
+    assert len(written) == 3
+    assert all(os.path.getsize(p) > 0 for p in written)

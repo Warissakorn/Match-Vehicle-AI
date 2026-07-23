@@ -62,6 +62,22 @@ def frame_filename(point: str, ts: datetime, frame_index: int, ext: str = "jpg")
     return f"{point}_{ts:%Y%m%d_%H%M%S}_{frame_index:06d}.{ext}"
 
 
+def _write_image(cv2, path: str, frame, image_ext: str) -> None:
+    """Write ``frame`` to ``path``, raising on failure.
+
+    Uses ``cv2.imencode`` + a binary ``open`` rather than ``cv2.imwrite``.
+    ``cv2.imwrite`` silently returns False (no file, no exception) when the
+    path contains non-ASCII characters on Windows — the exact "runs but the
+    Output folder is empty" symptom. Encoding to a buffer and writing it with
+    Python's ``open`` handles Unicode paths and surfaces real I/O errors.
+    """
+    ok, buf = cv2.imencode(f".{image_ext.lstrip('.')}", frame)
+    if not ok:
+        raise RuntimeError(f"Failed to encode frame as .{image_ext} (unsupported format?)")
+    with open(path, "wb") as fh:
+        fh.write(buf.tobytes())
+
+
 def extract_frames(
     video_path: str,
     output_dir: str,
@@ -111,16 +127,25 @@ def extract_frames(
                 ts = frame_timestamp(start, frame_index, fps)
                 name = frame_filename(point, ts, frame_index, image_ext)
                 out_path = os.path.join(output_dir, name)
-                cv2.imwrite(out_path, frame)
+                _write_image(cv2, out_path, frame, image_ext)
                 written.append(out_path)
                 saved += 1
                 if progress:
                     progress(saved, est_total, name)
             frame_index += 1
-
-        return written
     finally:
         cap.release()
+
+    # If the capture opened but yielded no decodable frames, the video codec is
+    # likely unsupported by this OpenCV build. Report it instead of silently
+    # returning an empty list.
+    if saved == 0:
+        raise RuntimeError(
+            f"No frames could be read from {video_path}. The video codec may be "
+            f"unsupported by the installed OpenCV build."
+        )
+
+    return written
 
 
 def default_output_dir(video_path: str, point: str) -> str:
