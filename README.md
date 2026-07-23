@@ -1,5 +1,7 @@
 # Mash-Object-AI — Cross-Point Vehicle Re-Identification
 
+[![CI](https://github.com/Warissakorn/Mash-Object-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/Warissakorn/Mash-Object-AI/actions/workflows/ci.yml)
+
 Match the **same physical vehicle** as it passes two separate camera points
 (**A** and **B**) using **visual appearance only** — no license-plate reading.
 Cameras may sit at different distances and angles.
