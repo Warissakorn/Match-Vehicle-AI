@@ -32,6 +32,25 @@ class PointResult:
     frame_count: int
 
 
+def _imread_unicode(cv2, path: str):
+    """Read an image, supporting non-ASCII paths; returns a BGR array or None.
+
+    ``cv2.imread`` returns None (no error) for paths with non-ASCII characters
+    (e.g. Thai) on Windows, which made detection silently find nothing when
+    frames lived in such a folder. Reading the bytes with Python's ``open`` and
+    decoding via ``cv2.imdecode`` handles Unicode paths on every platform.
+    """
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    if not data:
+        return None
+    arr = np.frombuffer(data, dtype=np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
 def _cache_key(folder: str, cfg: config.PipelineConfig) -> str:
     """Stable hash over filenames+mtimes+sizes and the detection config."""
     h = hashlib.sha256()
@@ -82,7 +101,7 @@ def process_point(
     next_id = 0
     total = len(frames)
     for idx, frame in enumerate(frames):
-        image = cv2.imread(frame.path)
+        image = _imread_unicode(cv2, frame.path)
         if image is None:
             continue
         detections = detector.detect(image)
