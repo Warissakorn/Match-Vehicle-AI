@@ -1,5 +1,5 @@
 # Core CV / ML
-ultralytics>=8.1.0        # YOLO vehicle detection (auto-downloads yolov8n.pt)
+ultralytics>=8.3.0        # YOLO vehicle detection (YOLOv8 + YOLO11 models)
 torch>=2.0.0             # backend for YOLO + ResNet embedder
 torchvision>=0.15.0      # ResNet50 Re-ID embedder + image transforms
 opencv-python>=4.8.0     # image IO, drawing bounding boxes

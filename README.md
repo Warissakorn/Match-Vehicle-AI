@@ -97,8 +97,9 @@ python app/gui.py          # or just ./run.sh
 
 1. Browse to the **Point A** and **Point B** frame folders — or click
    **From video...** to extract frames from a video first.
-2. Tune sliders if needed (similarity threshold, detection confidence, travel
-   window).
+2. Pick a **Detection model** from the dropdown (or click **Manage models...**
+   to download / update weights). Tune sliders if needed (similarity threshold,
+   detection confidence, travel window).
 3. Click **Process**. First run downloads the models.
 4. Click a vehicle in the A gallery → its best B-matches appear on the right
    with similarity scores. Double-click any thumbnail to view the full frame
@@ -113,9 +114,44 @@ python cli.py --dir-a samples/pointA --dir-b samples/pointB \
     --threshold 0.6 --max-travel 600
 ```
 
-Useful flags: `--conf` (detection confidence), `--min-travel`/`--max-travel`
-(seconds), `--no-time-gate`, `--one-to-one` (force a unique A↔B assignment),
-`--no-cache`.
+Useful flags: `--model` (detection model, see below), `--conf` (detection
+confidence), `--min-travel`/`--max-travel` (seconds), `--no-time-gate`,
+`--one-to-one` (force a unique A↔B assignment), `--no-cache`.
+
+## Detection models
+
+You can choose which YOLO model does the detection and keep the weights current.
+Two families are offered — **YOLOv8** (the original baseline) and **YOLO11**
+(newer, a bit faster/more accurate; recommended). Within a family the size goes
+`n` (nano, fastest) → `s` → `m` → `l` → `x` (largest, most accurate). All are
+COCO-pretrained, so the same vehicle classes apply.
+
+**Manage from the command line:**
+
+```bash
+python models_cli.py list                 # available + what's downloaded
+python models_cli.py download yolo11n.pt  # fetch a model
+python models_cli.py update yolo11n.pt    # re-fetch the latest weights
+python models_cli.py remove yolov8x.pt    # delete local weights
+```
+
+Then run with a chosen model:
+
+```bash
+python cli.py --dir-a samples/pointA --dir-b samples/pointB --model yolo11n.pt
+```
+
+`--model` also accepts a **custom `.pt` path** (e.g. your own fine-tuned vehicle
+model), which is passed straight to YOLO.
+
+**Manage from the GUI:** use the **Detection model** dropdown and the
+**Manage models...** button (download / update / remove, with install status).
+
+**Where weights live / staying up to date:** downloaded weights are cached in
+`<project>/models` (override with the `MASH_MODELS_DIR` env var or `--models-dir`).
+"Latest" tracks the installed `ultralytics` version, so to pull newer published
+weights, upgrade the package (`pip install -U ultralytics`) and then
+`python models_cli.py update <model>`.
 
 ## Logs
 
@@ -153,8 +189,11 @@ and timestamp parsing — all with synthetic data, so no model or network needed
 
 ## Configuration
 
-All tunables live in `config.py`: vehicle classes, YOLO weights, detection
-confidence, timestamp patterns, similarity threshold, and travel-time window.
+All tunables live in `config.py`: vehicle classes, default detection model,
+detection confidence, timestamp patterns, similarity threshold, and travel-time
+window. The selectable detection models are catalogued in
+`src/mash_reid/model_registry.py` and downloaded/updated via
+`src/mash_reid/model_manager.py` — add a `ModelInfo` entry to offer another one.
 
 ## Swapping the appearance model
 
