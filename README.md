@@ -117,6 +117,20 @@ Useful flags: `--conf` (detection confidence), `--min-travel`/`--max-travel`
 (seconds), `--no-time-gate`, `--one-to-one` (force a unique A↔B assignment),
 `--no-cache`.
 
+## Logs
+
+Every run writes a timestamped log file under `logs/` (e.g.
+`logs/mash_reid_20260723_101530.log`) for later analysis. The file captures full
+DEBUG detail — frames loaded, per-frame detection counts, unreadable images,
+model load, extraction stats, and errors — while the console shows INFO.
+
+- CLIs: `--log-dir <dir>` changes the folder, `--verbose` also prints DEBUG to
+  the console.
+- The GUI logs automatically and shows the log path in its status bar.
+
+If detection finds nothing, the log tells you why (e.g. "could not read image
+…" for every frame points to an unreadable folder). Log files are git-ignored.
+
 ## Filename timestamp convention
 
 The capture time is read from the filename. Supported formats (configurable in

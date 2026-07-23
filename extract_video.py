@@ -13,6 +13,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from datetime import datetime
@@ -22,7 +23,7 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
-from mash_reid import video_extractor  # noqa: E402
+from mash_reid import logging_setup, video_extractor  # noqa: E402
 
 _START_FORMATS = ["%Y-%m-%d %H:%M:%S", "%Y%m%d_%H%M%S", "%Y-%m-%dT%H:%M:%S"]
 
@@ -48,7 +49,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start-time", type=_parse_start_time, default=None,
                         help="Override the video start time (else parsed from filename, then mtime)")
     parser.add_argument("--ext", default="jpg", help="Output image extension (default jpg)")
+    parser.add_argument("--log-dir", default=logging_setup.DEFAULT_LOG_DIR,
+                        help="Folder for run log files (default: logs/)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Also print DEBUG detail to the console")
     args = parser.parse_args(argv)
+
+    log_path = logging_setup.setup_logging(
+        args.log_dir, console_level=logging.DEBUG if args.verbose else logging.INFO)
+    print(f"Logging to {log_path}")
 
     out_dir = args.out or video_extractor.default_output_dir(args.video, args.point)
     start, source = video_extractor.resolve_start_time(args.video, args.start_time)

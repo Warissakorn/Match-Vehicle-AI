@@ -16,6 +16,9 @@ env/
 *.reidcache
 .cache/
 
+# Run logs
+logs/
+
 # Sample / large media
 samples/*.jpg
 samples/*.jpeg

@@ -26,7 +26,7 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
 import config  # noqa: E402
-from mash_reid import matcher, pipeline, video_extractor  # noqa: E402
+from mash_reid import logging_setup, matcher, pipeline, video_extractor  # noqa: E402
 from mash_reid.matcher import VehicleRecord  # noqa: E402
 
 THUMB_SIZE = (140, 110)
@@ -468,10 +468,12 @@ class VideoExtractDialog(tk.Toplevel):
 
 
 def main():
+    log_path = logging_setup.setup_logging()
     root = tk.Tk()
     root.title("Mash-Object-AI  |  Cross-Point Vehicle Re-ID")
     root.geometry("1100x760")
-    ReIDApp(root)
+    app = ReIDApp(root)
+    app.status.set(f"Ready. Logging to {log_path}")
     root.mainloop()
 
 

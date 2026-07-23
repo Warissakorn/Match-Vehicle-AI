@@ -9,6 +9,7 @@ re-match with new thresholds instantly without re-running the models.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import pickle
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from mash_reid import frame_loader
 from mash_reid.detector import VehicleDetector
 from mash_reid.embedder import Embedder, get_default_embedder
 from mash_reid.matcher import VehicleRecord
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -83,6 +86,7 @@ def process_point(
 
     cfg = cfg or config.PipelineConfig()
     frames = frame_loader.load_frames(folder, point)
+    log.info("Point %s: loaded %d frame(s) from %s", point, len(frames), folder)
 
     cache_path = None
     if use_cache:
@@ -91,20 +95,27 @@ def process_point(
             try:
                 with open(cache_path, "rb") as fh:
                     records = pickle.load(fh)
+                log.info("Point %s: loaded %d vehicle(s) from cache %s",
+                         point, len(records), cache_path)
                 if progress:
                     progress(len(frames), len(frames), "loaded from cache")
                 return PointResult(point, folder, records, len(frames))
             except Exception:
-                pass  # corrupt cache -> recompute
+                log.warning("Point %s: cache %s unreadable, recomputing",
+                            point, cache_path, exc_info=True)
 
     records: list[VehicleRecord] = []
     next_id = 0
     total = len(frames)
+    unreadable = 0
     for idx, frame in enumerate(frames):
         image = _imread_unicode(cv2, frame.path)
         if image is None:
+            unreadable += 1
+            log.warning("Point %s: could not read image %s (skipped)", point, frame.path)
             continue
         detections = detector.detect(image)
+        log.debug("Point %s: %s -> %d vehicle(s)", point, frame.name, len(detections))
         crops = [d.crop for d in detections]
         embeddings = embedder.embed_batch(crops)
         for det, emb in zip(detections, embeddings):
@@ -123,12 +134,21 @@ def process_point(
         if progress:
             progress(idx + 1, total, frame.name)
 
+    log.info("Point %s: detected %d vehicle(s) across %d frame(s)%s",
+             point, len(records), total,
+             f", {unreadable} unreadable" if unreadable else "")
+    if records == [] and unreadable == total and total > 0:
+        log.warning("Point %s: every frame was unreadable — if the folder path "
+                    "contains non-ASCII characters on Windows this was the cause; "
+                    "it is now handled, so re-run.", point)
+
     if cache_path:
         try:
             with open(cache_path, "wb") as fh:
                 pickle.dump(records, fh)
+            log.debug("Point %s: cached %d vehicle(s) to %s", point, len(records), cache_path)
         except Exception:
-            pass
+            log.warning("Point %s: could not write cache %s", point, cache_path, exc_info=True)
 
     return PointResult(point, folder, records, total)
 

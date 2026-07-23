@@ -12,6 +12,7 @@ before opening the GUI.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 
@@ -21,7 +22,7 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
 import config  # noqa: E402
-from mash_reid import matcher, pipeline  # noqa: E402
+from mash_reid import logging_setup, matcher, pipeline  # noqa: E402
 
 
 def _fmt_ts(dt) -> str:
@@ -46,7 +47,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="Force a one-to-one A/B assignment (Hungarian)")
     parser.add_argument("--no-cache", action="store_true",
                         help="Do not read/write the on-disk detection cache")
+    parser.add_argument("--log-dir", default=logging_setup.DEFAULT_LOG_DIR,
+                        help="Folder for run log files (default: logs/)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Also print DEBUG detail to the console")
     args = parser.parse_args(argv)
+
+    log_path = logging_setup.setup_logging(
+        args.log_dir, console_level=logging.DEBUG if args.verbose else logging.INFO)
+    print(f"Logging to {log_path}")
 
     pcfg = config.PipelineConfig(detection_conf=args.conf)
     detector, embedder = pipeline.build_pipeline(pcfg)

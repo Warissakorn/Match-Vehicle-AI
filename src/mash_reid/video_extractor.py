@@ -17,11 +17,14 @@ deferred import so the pure-logic helpers below unit-test without OpenCV.
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
 import config
 from mash_reid.frame_loader import parse_timestamp_from_name
+
+log = logging.getLogger(__name__)
 
 
 def resolve_start_time(video_path: str, explicit: datetime | None = None) -> tuple[datetime, str]:
@@ -101,10 +104,14 @@ def extract_frames(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    start, _src = resolve_start_time(video_path, start_time)
+    start, src = resolve_start_time(video_path, start_time)
+    log.info("Extracting point %s from %s (start=%s [%s], interval=%.2fs -> %s)",
+             point, video_path, start.strftime("%Y-%m-%d %H:%M:%S"), src,
+             interval_seconds, output_dir)
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
+        log.error("Could not open video: %s", video_path)
         raise RuntimeError(f"Could not open video: {video_path}")
 
     try:
@@ -113,6 +120,7 @@ def extract_frames(
             fps = 30.0  # sensible default when the container omits fps
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         step = frame_step(fps, interval_seconds)
+        log.debug("Video fps=%.3f, total_frames=%d, step=%d", fps, total_frames, step)
 
         written: list[str] = []
         frame_index = 0
@@ -140,11 +148,13 @@ def extract_frames(
     # likely unsupported by this OpenCV build. Report it instead of silently
     # returning an empty list.
     if saved == 0:
+        log.error("No frames read from %s (codec unsupported?)", video_path)
         raise RuntimeError(
             f"No frames could be read from {video_path}. The video codec may be "
             f"unsupported by the installed OpenCV build."
         )
 
+    log.info("Extracted %d frame(s) from %s to %s", saved, video_path, output_dir)
     return written
 
 
