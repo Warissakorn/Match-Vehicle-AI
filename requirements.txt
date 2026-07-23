@@ -1,0 +1,11 @@
+# Core CV / ML
+ultralytics>=8.1.0        # YOLO vehicle detection (auto-downloads yolov8n.pt)
+torch>=2.0.0             # backend for YOLO + ResNet embedder
+torchvision>=0.15.0      # ResNet50 Re-ID embedder + image transforms
+opencv-python>=4.8.0     # image IO, drawing bounding boxes
+numpy>=1.24.0            # embeddings / similarity math
+scipy>=1.10.0            # Hungarian assignment (linear_sum_assignment)
+Pillow>=9.5.0            # image handling for Tkinter thumbnails + EXIF
+
+# Testing
+pytest>=7.4.0

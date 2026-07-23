@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Model weights (downloaded on first run)
+*.pt
+*.pth
+*.onnx
+
+# Cached pipeline results
+*.reidcache
+.cache/
+
+# Sample / large media
+samples/*.jpg
+samples/*.jpeg
+samples/*.png
+!samples/README.md
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
