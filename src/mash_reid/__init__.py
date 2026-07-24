@@ -10,10 +10,12 @@ __version__ = "0.1.0"
 
 __all__ = [
     "logging_setup",
+    "image_io",
     "frame_loader",
     "video_extractor",
     "detector",
     "embedder",
     "matcher",
     "pipeline",
+    "training_export",
 ]

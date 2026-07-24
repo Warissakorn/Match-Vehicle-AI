@@ -75,12 +75,16 @@ def main(argv: list[str] | None = None) -> int:
     print("Processing point A ...")
     res_a = pipeline.process_point(args.dir_a, "A", detector, embedder, pcfg,
                                    use_cache=not args.no_cache, progress=show_progress)
-    print(f"\n  {len(res_a.records)} vehicles across {res_a.frame_count} frames")
+    a_clusters = matcher.cluster_same_point(res_a.records)
+    print(f"\n  {len(res_a.records)} vehicles across {res_a.frame_count} frames "
+          f"({len(set(a_clusters.values()))} distinct, after grouping repeat sightings)")
 
     print("Processing point B ...")
     res_b = pipeline.process_point(args.dir_b, "B", detector, embedder, pcfg,
                                    use_cache=not args.no_cache, progress=show_progress)
-    print(f"\n  {len(res_b.records)} vehicles across {res_b.frame_count} frames")
+    b_clusters = matcher.cluster_same_point(res_b.records)
+    print(f"\n  {len(res_b.records)} vehicles across {res_b.frame_count} frames "
+          f"({len(set(b_clusters.values()))} distinct, after grouping repeat sightings)")
 
     mcfg = config.MatchConfig(
         similarity_threshold=args.threshold,

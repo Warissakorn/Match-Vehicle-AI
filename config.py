@@ -56,6 +56,23 @@ DEFAULT_SIMILARITY_THRESHOLD = 0.6
 # How many best B-candidates to keep per A-vehicle.
 DEFAULT_TOP_K = 5
 
+# Cosine-similarity cutoff for grouping repeat detections of the same vehicle
+# WITHIN one point (e.g. a car circling back past the same camera). Higher than
+# the cross-point threshold since same-point detections share the same camera
+# angle/lighting, so genuine repeats look more alike than cross-point matches.
+DEFAULT_SAME_POINT_SIMILARITY_THRESHOLD = 0.8
+
+# Folder for confirm/reject-labeled training pairs exported from the GUI.
+DEFAULT_TRAINING_DATA_DIR = "training_data"
+
+# Real galleries can hold thousands of vehicles per point. Each thumbnail
+# card loads an image from disk and creates several Tkinter widgets, so
+# rendering every single one freezes the GUI for real-world frame counts.
+# Gallery views cap at this many cards (earliest by time) and say so in the
+# status/label text; narrowing by selecting an A-vehicle (top-k candidates
+# only) is unaffected.
+DEFAULT_MAX_GALLERY_THUMBNAILS = 300
+
 
 @dataclass
 class MatchConfig:
