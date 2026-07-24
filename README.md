@@ -1,4 +1,4 @@
-# Mash-Object-AI — Cross-Point Vehicle Re-Identification
+# Match-Vehicle-AI — Cross-Point Vehicle Re-Identification
 
 [![CI](https://github.com/Warissakorn/Mash-Object-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/Warissakorn/Mash-Object-AI/actions/workflows/ci.yml)
 
