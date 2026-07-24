@@ -1,4 +1,4 @@
-"""Mash-Object-AI: cross-point vehicle Re-Identification.
+"""Match-Vehicle-AI: cross-point vehicle Re-Identification.
 
 Match the same physical vehicle between two camera points (A and B) using
 visual appearance only. See the top-level README for usage.

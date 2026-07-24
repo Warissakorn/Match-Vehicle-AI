@@ -1,5 +1,5 @@
 @echo off
-REM Launcher for the Mash-Object-AI vehicle Re-ID GUI (Windows).
+REM Launcher for the Match-Vehicle-AI vehicle Re-ID GUI (Windows).
 REM
 REM On first run it creates a local virtual environment, installs the
 REM dependencies, then opens the Tkinter desktop app. Later runs reuse the
@@ -51,6 +51,6 @@ if not "%REQ_HASH%"=="%OLD_HASH%" (
     > "%STAMP%" echo %REQ_HASH%
 )
 
-echo Launching Mash-Object-AI GUI ...
+echo Launching Match-Vehicle-AI GUI ...
 "%VPY%" app\gui.py %*
 endlocal

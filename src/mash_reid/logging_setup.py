@@ -60,5 +60,5 @@ def setup_logging(log_dir: str = DEFAULT_LOG_DIR, console_level: int = logging.I
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
-    logger.info("=== Mash-Object-AI run started, logging to %s ===", log_path)
+    logger.info("=== Match-Vehicle-AI run started, logging to %s ===", log_path)
     return log_path

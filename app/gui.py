@@ -656,7 +656,7 @@ class ModelManagerDialog(tk.Toplevel):
 def main():
     log_path = logging_setup.setup_logging()
     root = tk.Tk()
-    root.title("Mash-Object-AI  |  Cross-Point Vehicle Re-ID")
+    root.title("Match-Vehicle-AI  |  Cross-Point Vehicle Re-ID")
     root.geometry("1100x760")
     app = ReIDApp(root)
     app.status.set(f"Ready. Logging to {log_path}")

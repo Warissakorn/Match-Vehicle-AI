@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Launcher for the Mash-Object-AI vehicle Re-ID GUI (Linux / macOS).
+# Launcher for the Match-Vehicle-AI vehicle Re-ID GUI (Linux / macOS).
 #
 # On first run it creates a local virtual environment, installs the
 # dependencies, then opens the Tkinter desktop app. On later runs it reuses the
@@ -44,5 +44,5 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$REQ_HASH" ]; then
     echo "$REQ_HASH" > "$STAMP"
 fi
 
-echo "Launching Mash-Object-AI GUI ..."
+echo "Launching Match-Vehicle-AI GUI ..."
 exec python app/gui.py "$@"
