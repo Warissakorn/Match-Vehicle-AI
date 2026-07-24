@@ -168,6 +168,16 @@ def cluster_same_point(
     emb = np.stack([r.embedding for r in records])
     sim = cosine_similarity_matrix(emb, emb)
 
+    # Find qualifying (i, j) pairs with numpy rather than a Python-level n^2
+    # loop: with thousands of vehicles per point (real gallery sizes seen in
+    # the field run into the tens of thousands) a pure-Python double loop is
+    # tens of millions of iterations and freezes the caller for minutes.
+    # np.triu + np.nonzero do the same n^2 work in C, and -- since genuine
+    # repeat sightings are a small fraction of all pairs -- return only the
+    # handful of qualifying pairs for the Python union-find loop below.
+    above_threshold = np.triu(sim >= similarity_threshold, k=1)
+    pairs_i, pairs_j = np.nonzero(above_threshold)
+
     # Union-find over indices connected by similarity >= threshold.
     parent = list(range(n))
 
@@ -182,10 +192,8 @@ def cluster_same_point(
         if ra != rb:
             parent[ra] = rb
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            if sim[i, j] >= similarity_threshold:
-                union(i, j)
+    for i, j in zip(pairs_i.tolist(), pairs_j.tolist()):
+        union(i, j)
 
     root_to_cluster: dict[int, int] = {}
     result: dict[int, int] = {}

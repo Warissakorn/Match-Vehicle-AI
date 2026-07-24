@@ -108,8 +108,13 @@ python app/gui.py          # or just ./run.sh
    to download / update weights). Tune sliders if needed (similarity threshold,
    detection confidence, travel window).
 3. Click **Process**. First run downloads the models. The right panel starts by
-   showing **every vehicle detected at point B** — useful for browsing before
+   showing every vehicle detected at point B — useful for browsing before
    you've picked anything from A ("Show all B" returns to this view any time).
+   Galleries cap at `config.DEFAULT_MAX_GALLERY_THUMBNAILS` (300 by default,
+   earliest by time) since real footage can produce thousands of vehicles per
+   point and rendering a thumbnail for every one would freeze the window; the
+   status bar says so when a gallery is truncated. Matching against an A
+   vehicle is unaffected — it isn't limited to what's currently rendered.
 4. Click a vehicle in the A gallery → its best B-matches appear on the right
    instead, with similarity scores. Click **✓ Same** / **✗ Diff** on a candidate
    to label it as training data (saved under `training_data/`, see below).
