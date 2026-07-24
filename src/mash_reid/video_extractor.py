@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 import config
 from mash_reid.frame_loader import parse_timestamp_from_name
+from mash_reid.image_io import imwrite_unicode as _write_image
 
 log = logging.getLogger(__name__)
 
@@ -63,22 +64,6 @@ def frame_filename(point: str, ts: datetime, frame_index: int, ext: str = "jpg")
     """
     ext = ext.lstrip(".")
     return f"{point}_{ts:%Y%m%d_%H%M%S}_{frame_index:06d}.{ext}"
-
-
-def _write_image(cv2, path: str, frame, image_ext: str) -> None:
-    """Write ``frame`` to ``path``, raising on failure.
-
-    Uses ``cv2.imencode`` + a binary ``open`` rather than ``cv2.imwrite``.
-    ``cv2.imwrite`` silently returns False (no file, no exception) when the
-    path contains non-ASCII characters on Windows — the exact "runs but the
-    Output folder is empty" symptom. Encoding to a buffer and writing it with
-    Python's ``open`` handles Unicode paths and surfaces real I/O errors.
-    """
-    ok, buf = cv2.imencode(f".{image_ext.lstrip('.')}", frame)
-    if not ok:
-        raise RuntimeError(f"Failed to encode frame as .{image_ext} (unsupported format?)")
-    with open(path, "wb") as fh:
-        fh.write(buf.tobytes())
 
 
 def extract_frames(

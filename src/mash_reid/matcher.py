@@ -147,6 +147,64 @@ def _match_top_k(
     return results
 
 
+def cluster_same_point(
+    records: list[VehicleRecord],
+    similarity_threshold: float = config.DEFAULT_SAME_POINT_SIMILARITY_THRESHOLD,
+) -> dict[int, int]:
+    """Group records from ONE point that likely show the same physical vehicle.
+
+    The same vehicle can be detected in several frames at a single point (e.g.
+    waiting, circling back). This groups such detections by appearance only —
+    no time gate, since all detections are already known to be at the same
+    point, so recording order doesn't constrain which ones can match.
+
+    Returns ``{record_id: cluster_id}`` with every record assigned a cluster,
+    including singletons (cluster ids are 0-indexed in first-seen order).
+    """
+    n = len(records)
+    if n == 0:
+        return {}
+
+    emb = np.stack([r.embedding for r in records])
+    sim = cosine_similarity_matrix(emb, emb)
+
+    # Find qualifying (i, j) pairs with numpy rather than a Python-level n^2
+    # loop: with thousands of vehicles per point (real gallery sizes seen in
+    # the field run into the tens of thousands) a pure-Python double loop is
+    # tens of millions of iterations and freezes the caller for minutes.
+    # np.triu + np.nonzero do the same n^2 work in C, and -- since genuine
+    # repeat sightings are a small fraction of all pairs -- return only the
+    # handful of qualifying pairs for the Python union-find loop below.
+    above_threshold = np.triu(sim >= similarity_threshold, k=1)
+    pairs_i, pairs_j = np.nonzero(above_threshold)
+
+    # Union-find over indices connected by similarity >= threshold.
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i, j in zip(pairs_i.tolist(), pairs_j.tolist()):
+        union(i, j)
+
+    root_to_cluster: dict[int, int] = {}
+    result: dict[int, int] = {}
+    for i, rec in enumerate(records):
+        root = find(i)
+        if root not in root_to_cluster:
+            root_to_cluster[root] = len(root_to_cluster)
+        result[rec.record_id] = root_to_cluster[root]
+    return result
+
+
 def _match_one_to_one(
     records_a: list[VehicleRecord],
     records_b: list[VehicleRecord],

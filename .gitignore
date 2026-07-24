@@ -20,6 +20,9 @@ models/
 # Run logs
 logs/
 
+# Labeled training pairs exported from the GUI
+training_data/
+
 # Sample / large media
 samples/*.jpg
 samples/*.jpeg
