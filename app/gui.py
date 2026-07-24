@@ -340,7 +340,17 @@ class ReIDApp(ttk.Frame):
             res_a = pipeline.process_point(dir_a, "A", detector, embedder, pcfg, progress=progress)
             self._queue.put(("status", "Processing point B..."))
             res_b = pipeline.process_point(dir_b, "B", detector, embedder, pcfg, progress=progress)
-            self._queue.put(("done", (res_a, res_b)))
+
+            # Group repeat sightings of the same vehicle within each point
+            # (e.g. a car circling back past the same camera). Computed here,
+            # off the GUI thread: with real galleries running into the
+            # thousands of vehicles this is seconds of work, and would freeze
+            # the window if run from the Tkinter callback instead.
+            self._queue.put(("status", "Grouping repeat sightings..."))
+            a_clusters = matcher.cluster_same_point(res_a.records)
+            b_clusters = matcher.cluster_same_point(res_b.records)
+
+            self._queue.put(("done", (res_a, res_b, a_clusters, b_clusters)))
         except Exception as exc:  # surface errors to the UI thread
             self._queue.put(("error", str(exc)))
 
@@ -362,15 +372,12 @@ class ReIDApp(ttk.Frame):
             pass
         self.after(100, self._poll_queue)
 
-    def _on_processed(self, res_a, res_b):
+    def _on_processed(self, res_a, res_b, a_clusters, b_clusters):
         self._res_a, self._res_b = res_a, res_b
         self._a_by_id = {r.record_id: r for r in res_a.records}
         self._b_by_id = {r.record_id: r for r in res_b.records}
-        # Group repeat sightings of the same vehicle within each point (e.g. a
-        # car circling back past the same camera) so they read as one vehicle
-        # rather than several, while every detection still stays visible.
-        self._a_clusters = matcher.cluster_same_point(res_a.records)
-        self._b_clusters = matcher.cluster_same_point(res_b.records)
+        self._a_clusters = a_clusters
+        self._b_clusters = b_clusters
         self._process_btn.config(state="normal")
         self.status.set(
             f"A: {len(res_a.records)} vehicles / {res_a.frame_count} frames   |   "
@@ -394,10 +401,18 @@ class ReIDApp(ttk.Frame):
         self.gallery_a.clear()
         if not self._res_a:
             return
-        for rec in self._res_a.records:
+        records = self._res_a.records
+        shown = records[: config.DEFAULT_MAX_GALLERY_THUMBNAILS]
+        for rec in shown:
             cap = f"A#{rec.record_id}  {rec.timestamp:%H:%M:%S}"
             cap += self._cluster_tag(self._a_clusters, rec.record_id)
             self.gallery_a.add_card(rec, cap, self._on_select_a, self._on_double)
+        if len(shown) < len(records):
+            self.status.set(
+                f"Point A: showing first {len(shown)} of {len(records)} vehicles "
+                f"(earliest by time) -- narrowing the gallery isn't needed to match, "
+                f"only to browse it."
+            )
 
     def _show_all_b(self):
         self._last_selected_a = None
@@ -407,12 +422,24 @@ class ReIDApp(ttk.Frame):
         """Default B view: every detected vehicle at point B, grouped by
         same-point cluster tag. Shown before any point-A vehicle is selected,
         and reachable again afterwards via the "Show all B" button.
+
+        Rendering is capped at ``config.DEFAULT_MAX_GALLERY_THUMBNAILS`` --
+        real galleries can hold thousands of vehicles, and a thumbnail card
+        per vehicle (each an image load + several Tkinter widgets) would
+        freeze the window well before that many render.
         """
         self.gallery_b.clear()
-        self.b_view_label.set("Showing: all point B vehicles")
         if not self._res_b:
+            self.b_view_label.set("Showing: all point B vehicles")
             return
-        for rec in self._res_b.records:
+        records = self._res_b.records
+        shown = records[: config.DEFAULT_MAX_GALLERY_THUMBNAILS]
+        if len(shown) < len(records):
+            self.b_view_label.set(
+                f"Showing: first {len(shown)} of {len(records)} point B vehicles")
+        else:
+            self.b_view_label.set("Showing: all point B vehicles")
+        for rec in shown:
             cap = f"B#{rec.record_id}  {rec.timestamp:%H:%M:%S}"
             cap += self._cluster_tag(self._b_clusters, rec.record_id)
             self.gallery_b.add_card(rec, cap, lambda r: None, self._on_double)
