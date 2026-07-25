@@ -578,10 +578,18 @@ class ReIDApp(ttk.Frame):
 
 
 class VideoExtractDialog(tk.Toplevel):
-    """Modal dialog: pick a video, extract timestamped frames for one point.
+    """Modal dialog: pick one or more videos, extract timestamped frames for
+    one point.
 
-    On success the output folder is written back into the point's folder entry
-    so the user can immediately Process it.
+    A single video keeps the original workflow (editable start time, output
+    defaults to a name derived from that video). Selecting several videos at
+    once treats them as clips of the same point -- e.g. a camera that splits
+    recordings every hour -- and combines them into one output folder; each
+    clip resolves its own start time from its own filename, so the Start
+    time field doesn't apply and is disabled.
+
+    On success the output folder is written back into the point's folder
+    entry so the user can immediately Process it.
     """
 
     def __init__(self, parent, point, folder_var):
@@ -590,12 +598,12 @@ class VideoExtractDialog(tk.Toplevel):
         self.point = point
         self.folder_var = folder_var
         self._queue: queue.Queue = queue.Queue()
+        self.video_paths: list[str] = []
 
-        self.video_path = tk.StringVar()
         self.out_dir = tk.StringVar()
         self.interval = tk.DoubleVar(value=1.0)
         self.start_time = tk.StringVar()
-        self.status = tk.StringVar(value="Choose a video to begin.")
+        self.status = tk.StringVar(value="Choose one or more videos to begin.")
 
         self._build()
         self.transient(parent)
@@ -606,9 +614,13 @@ class VideoExtractDialog(tk.Toplevel):
 
         vrow = ttk.Frame(self)
         vrow.pack(fill="x", **pad)
-        ttk.Label(vrow, text="Video", width=10).pack(side="left")
-        ttk.Entry(vrow, textvariable=self.video_path, width=48).pack(side="left", fill="x", expand=True)
-        ttk.Button(vrow, text="Browse...", command=self._pick_video).pack(side="left", padx=4)
+        ttk.Label(vrow, text="Video(s)", width=10).pack(side="left", anchor="n")
+        self._video_list = tk.Listbox(vrow, height=4, width=48)
+        self._video_list.pack(side="left", fill="x", expand=True)
+        vbtns = ttk.Frame(vrow)
+        vbtns.pack(side="left", padx=4)
+        ttk.Button(vbtns, text="Browse...", command=self._pick_video).pack(fill="x")
+        ttk.Button(vbtns, text="Clear", command=self._clear_videos).pack(fill="x", pady=(2, 0))
 
         orow = ttk.Frame(self)
         orow.pack(fill="x", **pad)
@@ -619,8 +631,11 @@ class VideoExtractDialog(tk.Toplevel):
         srow = ttk.Frame(self)
         srow.pack(fill="x", **pad)
         ttk.Label(srow, text="Start time", width=10).pack(side="left")
-        ttk.Entry(srow, textvariable=self.start_time, width=24).pack(side="left")
-        ttk.Label(srow, text="(auto from filename; edit as YYYY-MM-DD HH:MM:SS)").pack(side="left", padx=6)
+        self._start_entry = ttk.Entry(srow, textvariable=self.start_time, width=24)
+        self._start_entry.pack(side="left")
+        self._start_hint = ttk.Label(
+            srow, text="(auto from filename; edit as YYYY-MM-DD HH:MM:SS)")
+        self._start_hint.pack(side="left", padx=6)
 
         irow = ttk.Frame(self)
         irow.pack(fill="x", **pad)
@@ -637,18 +652,39 @@ class VideoExtractDialog(tk.Toplevel):
         ttk.Button(brow, text="Close", command=self.destroy).pack(side="right", padx=4)
 
     def _pick_video(self):
-        path = filedialog.askopenfilename(
+        paths = filedialog.askopenfilenames(
             parent=self,
             filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv *.webm"), ("All files", "*.*")],
         )
-        if not path:
+        if not paths:
             return
-        self.video_path.set(path)
-        # Prefill output folder and the start time parsed from the filename.
-        self.out_dir.set(video_extractor.default_output_dir(path, self.point))
-        start, source = video_extractor.resolve_start_time(path, None)
-        self.start_time.set(start.strftime("%Y-%m-%d %H:%M:%S"))
-        self.status.set(f"Start time from {source}. Adjust if needed, then Extract.")
+        self.video_paths = list(paths)
+        self._video_list.delete(0, "end")
+        for p in self.video_paths:
+            self._video_list.insert("end", os.path.basename(p))
+
+        if len(self.video_paths) == 1:
+            video = self.video_paths[0]
+            self.out_dir.set(video_extractor.default_output_dir(video, self.point))
+            start, source = video_extractor.resolve_start_time(video, None)
+            self.start_time.set(start.strftime("%Y-%m-%d %H:%M:%S"))
+            self._start_entry.config(state="normal")
+            self.status.set(f"Start time from {source}. Adjust if needed, then Extract.")
+        else:
+            # Multiple clips: each resolves its own start time, so a single
+            # shared override doesn't make sense here -- disable the field.
+            self.out_dir.set(video_extractor.default_output_dir_multi(self.video_paths, self.point))
+            self.start_time.set("")
+            self._start_entry.config(state="disabled")
+            self.status.set(
+                f"{len(self.video_paths)} clips selected. Each resolves its own "
+                f"start time from its filename; they'll be combined into one folder.")
+
+    def _clear_videos(self):
+        self.video_paths = []
+        self._video_list.delete(0, "end")
+        self._start_entry.config(state="normal")
+        self.status.set("Choose one or more videos to begin.")
 
     def _pick_out(self):
         path = filedialog.askdirectory(parent=self)
@@ -668,38 +704,49 @@ class VideoExtractDialog(tk.Toplevel):
         raise ValueError(f"Bad start time '{text}'. Use YYYY-MM-DD HH:MM:SS.")
 
     def _start(self):
-        video = self.video_path.get().strip()
         out = self.out_dir.get().strip()
-        if not os.path.isfile(video):
-            messagebox.showerror("No video", "Please choose a valid video file.", parent=self)
+        if not self.video_paths:
+            messagebox.showerror("No video", "Please choose at least one video file.", parent=self)
+            return
+        if not all(os.path.isfile(v) for v in self.video_paths):
+            messagebox.showerror("No video", "One or more selected videos no longer exist.", parent=self)
             return
         if not out:
             messagebox.showerror("No output", "Please choose an output folder.", parent=self)
             return
-        try:
-            start_dt = self._parse_start()
-        except ValueError as exc:
-            messagebox.showerror("Invalid start time", str(exc), parent=self)
-            return
+
+        start_dt = None
+        if len(self.video_paths) == 1:
+            try:
+                start_dt = self._parse_start()
+            except ValueError as exc:
+                messagebox.showerror("Invalid start time", str(exc), parent=self)
+                return
 
         self._extract_btn.config(state="disabled")
         self.status.set("Extracting frames...")
         thread = threading.Thread(
-            target=self._worker, args=(video, out, start_dt, self.interval.get()), daemon=True
+            target=self._worker, args=(list(self.video_paths), out, start_dt, self.interval.get()),
+            daemon=True,
         )
         thread.start()
         self.after(100, self._poll)
 
-    def _worker(self, video, out, start_dt, interval):
+    def _worker(self, videos, out, start_dt, interval):
         try:
             def progress(done, total, msg):
                 total_str = str(total) if total else "?"
                 self._queue.put(("status", f"[{done}/{total_str}] {msg}"))
 
-            written = video_extractor.extract_frames(
-                video, out, self.point, interval_seconds=interval,
-                start_time=start_dt, progress=progress,
-            )
+            if len(videos) == 1:
+                written = video_extractor.extract_frames(
+                    videos[0], out, self.point, interval_seconds=interval,
+                    start_time=start_dt, progress=progress,
+                )
+            else:
+                written = video_extractor.extract_many(
+                    videos, out, self.point, interval_seconds=interval, progress=progress,
+                )
             self._queue.put(("done", (out, len(written))))
         except Exception as exc:
             self._queue.put(("error", str(exc)))
