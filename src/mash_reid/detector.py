@@ -38,12 +38,14 @@ class VehicleDetector:
     def __init__(self, cfg: config.PipelineConfig | None = None):
         self.cfg = cfg or config.PipelineConfig()
         self._model = None  # lazy-loaded so import stays cheap / offline-safe
+        self._resolved_device: str | None = None
 
     def _ensure_model(self):
         if self._model is None:
             from ultralytics import YOLO  # heavy import, deferred
 
             from mash_reid import model_manager
+            from mash_reid.device import resolve_device
 
             # Catalog models are downloaded (if missing) into the shared models
             # dir; custom paths pass straight through to YOLO.
@@ -57,9 +59,13 @@ class VehicleDetector:
             except Exception:
                 log.exception("Failed to load YOLO weights '%s'", weights)
                 raise
-            if self.cfg.device:
-                self._model.to(self.cfg.device)
-            log.info("YOLO model ready")
+            # cfg.device used to only take effect when truthy, and was never
+            # actually set by any caller -- resolving "auto" here (instead of
+            # requiring an explicit device) is what makes a GPU get used at
+            # all once one is present.
+            self._resolved_device = resolve_device(self.cfg.device)
+            self._model.to(self._resolved_device)
+            log.info("YOLO model ready on %s", self._resolved_device)
         return self._model
 
     def detect(self, image: np.ndarray) -> list[Detection]:
@@ -69,6 +75,7 @@ class VehicleDetector:
             image,
             conf=self.cfg.detection_conf,
             classes=list(self.cfg.vehicle_class_ids),
+            device=self._resolved_device,
             verbose=False,
         )
 

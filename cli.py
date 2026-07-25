@@ -57,6 +57,9 @@ def main(argv: list[str] | None = None) -> int:
                              "or $MASH_MODELS_DIR)")
     parser.add_argument("--conf", type=float, default=config.DEFAULT_DETECTION_CONF,
                         help="YOLO detection confidence")
+    parser.add_argument("--device", default=None,
+                        help="Compute device: 'auto' (default, uses CUDA if available), "
+                             "'cpu', 'cuda', or 'cuda:N'")
     parser.add_argument("--min-travel", type=float, default=0.0,
                         help="Min seconds between passing A and B")
     parser.add_argument("--max-travel", type=float, default=600.0,
@@ -81,9 +84,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Logging to {log_path}")
 
     pcfg = config.PipelineConfig(
-        yolo_weights=args.model, detection_conf=args.conf, models_dir=args.models_dir)
+        yolo_weights=args.model, detection_conf=args.conf, models_dir=args.models_dir,
+        device=args.device)
     print(f"Detection model: {args.model}")
     detector, embedder = pipeline.build_pipeline(pcfg)
+
+    from mash_reid.device import describe_device, resolve_device
+    print(f"Device: {describe_device(resolve_device(args.device))}")
 
     def show_progress(done, total, msg):
         print(f"  [{done}/{total}] {msg}", end="\r", flush=True)

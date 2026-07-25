@@ -173,6 +173,7 @@ class ReIDApp(ttk.Frame):
         self._model_display_to_key = {m.display_name: m.key for m in model_registry.all_models()}
         self.model_key = tk.StringVar(value=config.YOLO_WEIGHTS)
         self.model_display = tk.StringVar(value=model_registry.default().display_name)
+        self.device = tk.StringVar(value="auto")
         self.threshold = tk.DoubleVar(value=config.DEFAULT_SIMILARITY_THRESHOLD)
         self.det_conf = tk.DoubleVar(value=config.DEFAULT_DETECTION_CONF)
         self.min_travel = tk.DoubleVar(value=0.0)
@@ -228,6 +229,20 @@ class ReIDApp(ttk.Frame):
         ttk.Label(mrow, textvariable=self.model_status, width=14,
                   font=("TkDefaultFont", 8)).pack(side="left", padx=(6, 0))
         self._refresh_model_status()
+
+        # Compute device: "auto" resolves to CUDA if a GPU is present, else
+        # CPU. Probing CUDA touches torch, so it's deferred to a background
+        # thread rather than blocking window construction.
+        drow = ttk.Frame(top)
+        drow.pack(fill="x", pady=2)
+        ttk.Label(drow, text="Device", width=14).pack(side="left")
+        self._device_combo = ttk.Combobox(
+            drow, textvariable=self.device, state="readonly", values=["auto"], width=10)
+        self._device_combo.pack(side="left", padx=4)
+        self.device_status = tk.StringVar(value="probing...")
+        ttk.Label(drow, textvariable=self.device_status,
+                  font=("TkDefaultFont", 8)).pack(side="left", padx=(6, 0))
+        self._probe_devices()
 
         # Sliders / options
         opts = ttk.Frame(top)
@@ -316,6 +331,7 @@ class ReIDApp(ttk.Frame):
             return
 
         q: queue.Queue = queue.Queue()
+        device = self.device.get()  # read on the main thread before handing off
         self.status.set(f"OCR-ing timestamps for point {point}...")
 
         def worker():
@@ -328,7 +344,7 @@ class ReIDApp(ttk.Frame):
                 def progress(done, total, msg):
                     q.put(("status", f"[{done}/{total}] OCR point {point}: {msg}"))
 
-                results = timestamp_ocr.ocr_folder(folder, names, progress=progress)
+                results = timestamp_ocr.ocr_folder(folder, names, device=device, progress=progress)
                 q.put(("done", (point, len(results), len(names))))
             except Exception as exc:  # surface errors to the UI thread
                 q.put(("error", str(exc)))
@@ -375,6 +391,38 @@ class ReIDApp(ttk.Frame):
     def _open_model_manager(self):
         ModelManagerDialog(self, on_close=self._refresh_model_status)
 
+    def _probe_devices(self):
+        """Populate the Device dropdown once CUDA availability is known.
+
+        Probing touches torch (a heavy, deferred import), so it runs in a
+        background thread; only the queue-drained callback on the main
+        thread ever touches the Tk widgets, same convention as every other
+        background task in this file.
+        """
+        q: queue.Queue = queue.Queue()
+
+        def worker():
+            from mash_reid import device as device_module
+
+            try:
+                devices = device_module.list_available_devices()
+                desc = device_module.describe_device(device_module.resolve_device("auto"))
+            except Exception:
+                devices, desc = ["auto", "cpu"], "CPU"
+            q.put((devices, desc))
+
+        def poll():
+            try:
+                devices, desc = q.get_nowait()
+            except queue.Empty:
+                self.after(150, poll)
+                return
+            self._device_combo.config(values=devices)
+            self.device_status.set(f"auto -> {desc}")
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(150, poll)
+
     def _current_match_config(self) -> config.MatchConfig:
         return config.MatchConfig(
             similarity_threshold=self.threshold.get(),
@@ -399,7 +447,8 @@ class ReIDApp(ttk.Frame):
     def _process_worker(self, dir_a, dir_b):
         try:
             pcfg = config.PipelineConfig(
-                yolo_weights=self.model_key.get(), detection_conf=self.det_conf.get())
+                yolo_weights=self.model_key.get(), detection_conf=self.det_conf.get(),
+                device=self.device.get())
             detector, embedder = pipeline.build_pipeline(pcfg)
 
             def progress(done, total, msg):
