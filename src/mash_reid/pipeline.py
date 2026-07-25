@@ -152,5 +152,5 @@ def build_pipeline(cfg: config.PipelineConfig | None = None):
     """Convenience factory returning (detector, embedder) sharing one config."""
     cfg = cfg or config.PipelineConfig()
     detector = VehicleDetector(cfg)
-    embedder = get_default_embedder(device=cfg.device)
+    embedder = get_default_embedder(device=cfg.device, batch_size=cfg.embed_batch_size)
     return detector, embedder
