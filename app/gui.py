@@ -21,6 +21,7 @@ Run with:  python app/gui.py
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import sys
@@ -41,11 +42,18 @@ from mash_reid import (  # noqa: E402
     model_manager,
     model_registry,
     pipeline,
+    sysmon,
     timestamp_ocr,
     training_export,
     video_extractor,
 )
 from mash_reid.matcher import VehicleRecord  # noqa: E402
+
+# Named under the "mash_reid" tree (rather than __name__, which would be
+# "app.gui" or "__main__") so this module's log lines land in the same
+# rotating file the rest of the package writes to -- logging_setup only
+# attaches handlers to "mash_reid" and its descendants.
+log = logging.getLogger("mash_reid.gui")
 
 THUMB_SIZE = (140, 110)
 
@@ -192,6 +200,7 @@ class ReIDApp(ttk.Frame):
         self._queue: queue.Queue = queue.Queue()
 
         self._build_controls()
+        self._build_status_bar()
         self._build_panels()
 
     # --- UI construction ---------------------------------------------------
@@ -261,8 +270,37 @@ class ReIDApp(ttk.Frame):
         self._process_btn = ttk.Button(toggles, text="Process", command=self._on_process)
         self._process_btn.pack(side="right", padx=4)
 
-        ttk.Label(self, textvariable=self.status, relief="sunken",
-                  anchor="w").pack(fill="x", pady=(4, 6))
+    def _build_status_bar(self):
+        """Bottom-anchored status + resource bar.
+
+        Packed with side="bottom" *before* the gallery panes (which pack
+        with fill="both", expand=True) so it stays pinned to the window's
+        bottom edge regardless of resizing -- Tkinter's pack manager
+        allocates side="bottom" slots from whatever was packed so far, so a
+        bottom bar has to claim its space before an expanding widget grabs
+        the rest of the cavity. The status label previously lived here
+        without ever actually anchoring to the bottom (it just sat between
+        the controls and the galleries).
+        """
+        bar = ttk.Frame(self)
+        bar.pack(side="bottom", fill="x", pady=(4, 0))
+        ttk.Label(bar, textvariable=self.status, relief="sunken",
+                  anchor="w").pack(side="left", fill="x", expand=True)
+        self.resource_status = tk.StringVar(value="")
+        ttk.Label(bar, textvariable=self.resource_status, relief="sunken",
+                  anchor="e", font=("TkDefaultFont", 8)).pack(side="right")
+        self._poll_resources()
+
+    def _poll_resources(self):
+        """Refresh the CPU/RAM/GPU readout. Best-effort: a probe failure
+        (missing psutil, no GPU, ...) shows "n/a" for that field rather than
+        breaking the loop -- see ``mash_reid.sysmon``.
+        """
+        try:
+            self.resource_status.set(sysmon.format_sample(sysmon.sample()))
+        except Exception:
+            log.debug("Resource sample failed", exc_info=True)
+        self.after(config.RESOURCE_POLL_MS, self._poll_resources)
 
     def _add_slider(self, parent, label, var, lo, hi):
         frame = ttk.Frame(parent)
