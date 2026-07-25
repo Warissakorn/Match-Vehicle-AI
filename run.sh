@@ -40,6 +40,21 @@ REQ_HASH="$(sha256sum requirements.txt | awk '{print $1}')"
 if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$REQ_HASH" ]; then
     echo "Installing dependencies (first run or requirements changed) ..."
     python -m pip install --upgrade pip
+
+    # A plain `pip install torch` (via requirements.txt, below) can silently
+    # resolve to a CPU-only wheel on some platforms even with a real NVIDIA
+    # GPU present -- the #1 cause of "GPU not detected" reports (see the
+    # README's GPU section). Install a CUDA build first when a GPU is
+    # detected, so requirements.txt's `torch>=2.0.0` is already satisfied and
+    # pip won't replace it with a plain CPU build. Best-effort: if this fails
+    # (e.g. no wheel for this CUDA/driver combination), fall back to CPU.
+    if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+        echo "NVIDIA GPU detected -- installing CUDA-enabled PyTorch ..."
+        python -m pip install torch torchvision \
+            --index-url https://download.pytorch.org/whl/cu121 \
+            || echo "Warning: CUDA PyTorch install failed; falling back to the CPU build below."
+    fi
+
     python -m pip install -r requirements.txt
     echo "$REQ_HASH" > "$STAMP"
 fi
