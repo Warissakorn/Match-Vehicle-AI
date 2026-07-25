@@ -89,8 +89,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Detection model: {args.model}")
     detector, embedder = pipeline.build_pipeline(pcfg)
 
-    from mash_reid.device import describe_device, resolve_device
-    print(f"Device: {describe_device(resolve_device(args.device))}")
+    from mash_reid.device import describe_device, diagnose_cuda_unavailable, resolve_device
+    resolved = resolve_device(args.device)
+    print(f"Device: {describe_device(resolved)}")
+    if resolved == "cpu":
+        reason = diagnose_cuda_unavailable()
+        if reason:
+            print(f"  (CUDA not used: {reason})")
 
     def show_progress(done, total, msg):
         print(f"  [{done}/{total}] {msg}", end="\r", flush=True)

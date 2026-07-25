@@ -81,3 +81,31 @@ def list_available_devices() -> list[str]:
     if _torch_cuda_available():
         devices.append("cuda")
     return devices
+
+
+def diagnose_cuda_unavailable() -> str:
+    """One-line, human-readable reason CUDA isn't available -- or ``""`` if it is.
+
+    ``torch.cuda.is_available() == False`` conflates two very different
+    situations: no CUDA-capable GPU/driver, versus a torch build that was
+    never compiled with CUDA support at all (the default on some platforms
+    for a plain ``pip install torch`` -- see the README's GPU section).
+    ``torch.backends.cuda.is_built()`` distinguishes them: it's about the
+    installed binary, not the hardware, so it's true even on a machine with
+    no GPU as long as the *build* supports CUDA. Meant to be shown to a user
+    who expected to see "cuda" in the device list and didn't.
+    """
+    try:
+        import torch
+    except ImportError:
+        return "PyTorch is not installed"
+    try:
+        if torch.cuda.is_available():
+            return ""
+        if not torch.backends.cuda.is_built():
+            return ("This PyTorch build has no CUDA support (CPU-only wheel). "
+                     "Reinstall with a CUDA index -- see README's GPU section.")
+        return "No CUDA-capable GPU or driver detected"
+    except Exception as exc:
+        log.warning("Could not diagnose CUDA availability", exc_info=True)
+        return f"Could not determine CUDA availability ({exc})"
