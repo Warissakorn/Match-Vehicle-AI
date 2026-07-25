@@ -29,6 +29,19 @@ def _fmt_ts(dt) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _ocr_folder(folder: str, point: str, device, show_progress) -> None:
+    """OCR every frame in ``folder`` and write the timestamp sidecar."""
+    from mash_reid import timestamp_ocr
+
+    names = sorted(
+        f for f in os.listdir(folder)
+        if os.path.splitext(f)[1].lower() in config.IMAGE_EXTENSIONS
+    )
+    print(f"OCR-ing timestamps for point {point} ({len(names)} frame(s)) ...")
+    results = timestamp_ocr.ocr_folder(folder, names, device=device, progress=show_progress)
+    print(f"\n  Read {len(results)}/{len(names)} timestamp(s) from the frame overlay.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Cross-point vehicle Re-ID (A vs B).")
     parser.add_argument("--dir-a", required=True, help="Folder of frames from point A")
@@ -54,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Force a one-to-one A/B assignment (Hungarian)")
     parser.add_argument("--no-cache", action="store_true",
                         help="Do not read/write the on-disk detection cache")
+    parser.add_argument("--ocr-time", action="store_true",
+                        help="Read each frame's true timestamp via OCR before "
+                             "processing (writes a sidecar, reused on later runs)")
     parser.add_argument("--log-dir", default=logging_setup.DEFAULT_LOG_DIR,
                         help="Folder for run log files (default: logs/)")
     parser.add_argument("--verbose", action="store_true",
@@ -71,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
 
     def show_progress(done, total, msg):
         print(f"  [{done}/{total}] {msg}", end="\r", flush=True)
+
+    if args.ocr_time:
+        _ocr_folder(args.dir_a, "A", pcfg.device, show_progress)
+        _ocr_folder(args.dir_b, "B", pcfg.device, show_progress)
 
     print("Processing point A ...")
     res_a = pipeline.process_point(args.dir_a, "A", detector, embedder, pcfg,

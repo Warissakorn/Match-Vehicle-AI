@@ -49,6 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start-time", type=_parse_start_time, default=None,
                         help="Override the video start time (else parsed from filename, then mtime)")
     parser.add_argument("--ext", default="jpg", help="Output image extension (default jpg)")
+    parser.add_argument("--ocr-time", action="store_true",
+                        help="Read each extracted frame's true timestamp via OCR "
+                             "afterwards (writes a sidecar the pipeline picks up)")
     parser.add_argument("--log-dir", default=logging_setup.DEFAULT_LOG_DIR,
                         help="Folder for run log files (default: logs/)")
     parser.add_argument("--verbose", action="store_true",
@@ -74,6 +77,14 @@ def main(argv: list[str] | None = None) -> int:
         image_ext=args.ext, progress=progress,
     )
     print(f"\nDone. Wrote {len(written)} frames to {out_dir}")
+
+    if args.ocr_time and written:
+        from mash_reid import timestamp_ocr
+
+        names = sorted(os.path.basename(p) for p in written)
+        print(f"OCR-ing timestamps for {len(names)} frame(s) ...")
+        results = timestamp_ocr.ocr_folder(out_dir, names, progress=progress)
+        print(f"\n  Read {len(results)}/{len(names)} timestamp(s) from the frame overlay.")
     return 0
 
 

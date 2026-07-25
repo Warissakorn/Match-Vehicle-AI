@@ -37,7 +37,15 @@ class PointResult:
 
 
 def _cache_key(folder: str, cfg: config.PipelineConfig) -> str:
-    """Stable hash over filenames+mtimes+sizes and the detection config."""
+    """Stable hash over filenames+mtimes+sizes and the detection config.
+
+    Includes the OCR timestamp sidecar's own mtime+size (when present) so
+    that running "Fix times (OCR)" -- which rewrites timestamps but not the
+    frames themselves -- invalidates the cache instead of silently keeping
+    the pre-OCR (wrong) timestamps. The version prefix guards the reverse
+    case: caches written before ``VehicleRecord.timestamp_source`` existed
+    are also treated as stale rather than unpickled into the new shape.
+    """
     h = hashlib.sha256()
     h.update(repr((cfg.yolo_weights, cfg.detection_conf,
                    tuple(cfg.vehicle_class_ids), cfg.min_box_area)).encode())
@@ -48,7 +56,11 @@ def _cache_key(folder: str, cfg: config.PipelineConfig) -> str:
         p = os.path.join(folder, entry)
         st = os.stat(p)
         h.update(f"{entry}:{st.st_size}:{int(st.st_mtime)}".encode())
-    return h.hexdigest()[:16]
+    sidecar = os.path.join(folder, config.TIMESTAMP_SIDECAR_NAME)
+    if os.path.exists(sidecar):
+        st = os.stat(sidecar)
+        h.update(f"ocr:{st.st_size}:{int(st.st_mtime)}".encode())
+    return "v2." + h.hexdigest()[:16]
 
 
 def process_point(
@@ -110,6 +122,7 @@ def process_point(
                     bbox=det.bbox,
                     confidence=det.confidence,
                     embedding=emb.astype(np.float32),
+                    timestamp_source=frame.timestamp_source,
                 )
             )
             next_id += 1

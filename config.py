@@ -74,6 +74,44 @@ DEFAULT_TRAINING_DATA_DIR = "training_data"
 DEFAULT_MAX_GALLERY_THUMBNAILS = 300
 
 
+# --- Timestamp OCR -----------------------------------------------------------
+
+# Filename of the per-folder cache written by ``mash_reid.timestamp_ocr``.
+# ``frame_loader`` reads it (when present) ahead of the filename/EXIF/mtime
+# fallbacks, since it reflects the clock actually burned into the footage.
+TIMESTAMP_SIDECAR_NAME = ".timestamps.json"
+
+# Languages passed to easyocr.Reader -- overlays here are just digits and
+# separators, so English is sufficient (and keeps the model download small).
+OCR_LANGUAGES: tuple[str, ...] = ("en",)
+
+
+# --- GPU / device ------------------------------------------------------------
+
+# Cap on how many crops go through the embedder in a single forward pass.
+# The embedder used to batch every detection in a frame with no limit, which
+# risks a CUDA out-of-memory error on a busy frame; chunking bounds peak
+# GPU memory use regardless of how many vehicles one frame contains.
+DEFAULT_EMBED_BATCH_SIZE = 64
+
+# Run the embedder in fp16 on CUDA (roughly halves VRAM use and is faster on
+# most GPUs); ignored on CPU, where half precision isn't a win.
+USE_HALF_PRECISION_ON_CUDA = True
+
+
+# --- Resource monitor ---------------------------------------------------------
+
+# How often the GUI polls CPU/RAM/GPU usage for the resource bar (ms).
+RESOURCE_POLL_MS = 1000
+
+
+# --- Settings persistence -----------------------------------------------------
+
+# Where the GUI remembers folder paths, sliders, and other choices between
+# runs. Lives at the project root, next to config.py, and is git-ignored.
+DEFAULT_SETTINGS_FILE = "settings.json"
+
+
 @dataclass
 class MatchConfig:
     """Runtime-tunable matching parameters (exposed via GUI sliders)."""
@@ -102,3 +140,5 @@ class PipelineConfig:
     # Folder for downloaded weights. None -> model_manager.default_models_dir()
     # (``<project>/models`` or $MASH_MODELS_DIR).
     models_dir: str | None = None
+    # Max crops per embedder forward pass -- see DEFAULT_EMBED_BATCH_SIZE.
+    embed_batch_size: int = DEFAULT_EMBED_BATCH_SIZE
