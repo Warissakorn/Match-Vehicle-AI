@@ -179,7 +179,7 @@ def test_read_timestamp_none_when_unparseable():
 
 
 def test_ocr_folder_writes_sidecar_and_returns_mapping(tmp_path):
-    import cv2
+    cv2 = pytest.importorskip("cv2")
 
     names = [f"A_{i:04d}.jpg" for i in range(3)]
     for name in names:
@@ -206,6 +206,9 @@ def test_ocr_folder_writes_sidecar_and_returns_mapping(tmp_path):
 
 
 def test_ocr_folder_skips_unreadable_images(tmp_path):
+    # ocr_folder's deferred `import cv2` happens unconditionally on entry
+    # (not just when a real image is decoded), so this needs the guard too.
+    pytest.importorskip("cv2")
     (tmp_path / "broken.jpg").write_bytes(b"")  # zero-byte -> unreadable
     reader = _FakeReader([])
     results = timestamp_ocr.ocr_folder(str(tmp_path), ["broken.jpg"], reader=reader)
@@ -213,7 +216,7 @@ def test_ocr_folder_skips_unreadable_images(tmp_path):
 
 
 def test_ocr_folder_no_results_writes_no_sidecar(tmp_path):
-    import cv2
+    cv2 = pytest.importorskip("cv2")
 
     name = "A_0000.jpg"
     cv2.imwrite(str(tmp_path / name), _blank_image())

@@ -60,12 +60,10 @@ def test_none_sidecar_falls_back_to_filename():
 
 
 def test_load_frames_uses_ocr_sidecar(tmp_path):
-    import cv2
-    import numpy as np
-
-    img = np.zeros((10, 10, 3), dtype=np.uint8)
+    # load_frames only lists matching extensions and resolves each timestamp
+    # -- it never decodes the image itself, so a real image isn't needed.
     name = "random_photo.jpg"  # no timestamp in the filename
-    cv2.imwrite(str(tmp_path / name), img)
+    (tmp_path / name).write_bytes(b"not a real image, doesn't need to be")
 
     ts = datetime(2026, 7, 23, 9, 30, 0)
     timestamp_ocr._save_sidecar(str(tmp_path), {name: ts})
@@ -77,11 +75,7 @@ def test_load_frames_uses_ocr_sidecar(tmp_path):
 
 
 def test_load_frames_without_sidecar_falls_back_cleanly(tmp_path):
-    import cv2
-    import numpy as np
-
-    img = np.zeros((10, 10, 3), dtype=np.uint8)
-    cv2.imwrite(str(tmp_path / "A_20260723_101530.jpg"), img)
+    (tmp_path / "A_20260723_101530.jpg").write_bytes(b"not a real image")
 
     frames = load_frames(str(tmp_path), "A")
     assert len(frames) == 1
