@@ -108,11 +108,14 @@ class ScrollableThumbs(ttk.Frame):
         self._refs.clear()
 
     def add_card(self, record: VehicleRecord, caption: str, on_click, on_double,
-                on_confirm=None, on_reject=None):
+                on_confirm=None, on_reject=None, subcaption: str | None = None):
         """Add a thumbnail card. If ``on_confirm``/``on_reject`` (no-arg
         callables) are given, a "Same"/"Different" button pair is shown below
         the caption for labeling this candidate as training data; both
-        disable themselves after either is clicked.
+        disable themselves after either is clicked. ``subcaption`` -- when
+        given -- is shown as a second, smaller line (source frame filename
+        and where its timestamp came from) so a result can be traced back to
+        the exact image it was cropped from.
         """
         idx = len(self._refs)
         photo = _load_thumb(record)
@@ -127,6 +130,9 @@ class ScrollableThumbs(ttk.Frame):
         btn.bind("<Double-Button-1>", lambda e: on_double(record))
 
         ttk.Label(card, text=caption, font=("TkDefaultFont", 8)).pack()
+        if subcaption:
+            ttk.Label(card, text=subcaption, font=("TkDefaultFont", 7),
+                      foreground="#666666").pack()
 
         if on_confirm or on_reject:
             row = ttk.Frame(card)
@@ -460,6 +466,17 @@ class ReIDApp(ttk.Frame):
         size = sum(1 for c in clusters.values() if c == cluster_id)
         return f"  •Grp{cluster_id}(x{size})" if size > 1 else ""
 
+    def _subcaption(self, rec: VehicleRecord) -> str:
+        """Second caption line: source frame filename + where its timestamp
+        came from (ocr/filename/exif/mtime) -- lets you trace a result back
+        to the exact frame and confirm at a glance whether OCR-corrected
+        times are actually in effect.
+        """
+        name = os.path.basename(rec.frame_path)
+        if len(name) > 22:
+            name = name[:10] + "…" + name[-9:]
+        return f"{name}  [{rec.timestamp_source}]"
+
     def _populate_a(self):
         self.gallery_a.clear()
         if not self._res_a:
@@ -467,9 +484,10 @@ class ReIDApp(ttk.Frame):
         records = self._res_a.records
         shown = records[: config.DEFAULT_MAX_GALLERY_THUMBNAILS]
         for rec in shown:
-            cap = f"A#{rec.record_id}  {rec.timestamp:%H:%M:%S}"
+            cap = f"A#{rec.record_id}  {rec.timestamp:%Y-%m-%d %H:%M:%S}"
             cap += self._cluster_tag(self._a_clusters, rec.record_id)
-            self.gallery_a.add_card(rec, cap, self._on_select_a, self._on_double)
+            self.gallery_a.add_card(rec, cap, self._on_select_a, self._on_double,
+                                    subcaption=self._subcaption(rec))
         if len(shown) < len(records):
             self.status.set(
                 f"Point A: showing first {len(shown)} of {len(records)} vehicles "
@@ -503,9 +521,10 @@ class ReIDApp(ttk.Frame):
         else:
             self.b_view_label.set("Showing: all point B vehicles")
         for rec in shown:
-            cap = f"B#{rec.record_id}  {rec.timestamp:%H:%M:%S}"
+            cap = f"B#{rec.record_id}  {rec.timestamp:%Y-%m-%d %H:%M:%S}"
             cap += self._cluster_tag(self._b_clusters, rec.record_id)
-            self.gallery_b.add_card(rec, cap, lambda r: None, self._on_double)
+            self.gallery_b.add_card(rec, cap, lambda r: None, self._on_double,
+                                    subcaption=self._subcaption(rec))
 
     def _on_select_a(self, rec_a: VehicleRecord):
         if not self._res_b:
@@ -528,6 +547,7 @@ class ReIDApp(ttk.Frame):
                 rec_b, cap, lambda r: None, self._on_double,
                 on_confirm=lambda a=rec_a, b=rec_b, s=cand.similarity: self._label_pair(a, b, s, True),
                 on_reject=lambda a=rec_a, b=rec_b, s=cand.similarity: self._label_pair(a, b, s, False),
+                subcaption=self._subcaption(rec_b),
             )
 
     def _label_pair(self, rec_a: VehicleRecord, rec_b: VehicleRecord,
