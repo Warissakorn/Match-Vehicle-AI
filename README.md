@@ -49,7 +49,9 @@ several.
 
 The easiest way to run the app. The launcher creates a local virtual
 environment, installs dependencies on first run, and opens the GUI. Later runs
-reuse the environment (reinstalling only if `requirements.txt` changed).
+reuse the environment (reinstalling only if `requirements.txt` changed). If it
+detects an NVIDIA GPU (`nvidia-smi`), it installs a CUDA-enabled PyTorch build
+automatically — see "GPU not detected?" below if that doesn't end up working.
 
 **Linux / macOS**
 
@@ -229,11 +231,20 @@ That build's `torch.cuda.is_available()` is always `False`, so `cuda` won't
 appear in the Device dropdown / `--device` choices — this looks identical to
 "no GPU" from the app's side, but is actually just the wrong wheel installed.
 
-The app now tells you which case you're in: the GUI's Device row and the
-CLI's `Device:` line both print a reason (e.g. *"This PyTorch build has no
-CUDA support (CPU-only wheel)"* vs. *"No CUDA-capable GPU or driver
-detected"*) whenever CUDA isn't available.
+**`run.sh`/`run.bat` handle this automatically:** on a first run (or whenever
+`requirements.txt` changes), the launcher checks for `nvidia-smi`; if found, it
+installs a CUDA build of `torch`/`torchvision` *before* the regular
+`requirements.txt` install, so the plain install sees a compatible version
+already there and leaves it alone. This is best-effort (falls back to the CPU
+build if the CUDA install fails) and only runs during that install step, not
+on every launch — delete `.venv/.requirements.sha256` (or the whole `.venv`)
+to force it to re-check, e.g. after installing a GPU driver.
 
+If you installed manually (`pip install -r requirements.txt` yourself) or the
+automatic install still isn't picking up your GPU, the app tells you which
+case you're in: the GUI's Device row and the CLI's `Device:` line both print a
+reason (e.g. *"This PyTorch build has no CUDA support (CPU-only wheel)"* vs.
+*"No CUDA-capable GPU or driver detected"*) whenever CUDA isn't available.
 Check what you actually have installed:
 
 ```bash

@@ -40,9 +40,29 @@ set "OLD_HASH="
 if exist "%STAMP%" set /p OLD_HASH=<"%STAMP%"
 
 REM Install / update dependencies only when requirements changed.
+REM A plain "pip install torch" commonly resolves to a CPU-only wheel on
+REM Windows even with a real NVIDIA GPU present -- the #1 cause of "GPU not
+REM detected" reports, see the README's GPU section. The block below installs
+REM a CUDA build first when a GPU is detected, so requirements.txt's
+REM torch>=2.0.0 is already satisfied and pip won't replace it with a plain
+REM CPU build; best-effort, falls back to the CPU build if it fails.
+REM NOTE: REM comments must stay outside the parenthesized IF block below --
+REM a REM line containing unbalanced parentheses inside a block confuses
+REM cmd.exe's parser.
 if not "%REQ_HASH%"=="%OLD_HASH%" (
     echo Installing dependencies ^(first run or requirements changed^) ...
     "%VPY%" -m pip install --upgrade pip
+
+    where nvidia-smi >nul 2>&1
+    if not errorlevel 1 (
+        nvidia-smi >nul 2>&1
+        if not errorlevel 1 (
+            echo NVIDIA GPU detected -- installing CUDA-enabled PyTorch ...
+            "%VPY%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+            if errorlevel 1 echo Warning: CUDA PyTorch install failed; falling back to the CPU build below.
+        )
+    )
+
     "%VPY%" -m pip install -r requirements.txt
     if errorlevel 1 (
         echo Error: dependency installation failed.
