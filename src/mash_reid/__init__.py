@@ -14,8 +14,12 @@ __all__ = [
     "frame_loader",
     "video_extractor",
     "detector",
+    "device",
     "embedder",
     "matcher",
     "pipeline",
+    "settings",
+    "sysmon",
+    "timestamp_ocr",
     "training_export",
 ]
