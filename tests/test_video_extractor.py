@@ -67,9 +67,50 @@ def test_default_output_dir_uses_video_basename():
     assert out.endswith("A_20260723_101500_frames_A")
 
 
+def test_default_output_dir_multi_names_after_point():
+    out = ve.default_output_dir_multi(
+        ["/data/clip1.mp4", "/data/clip2.mp4"], "B")
+    assert out == "/data/B_frames"
+
+
 def test_extract_frames_missing_file_raises():
     with pytest.raises(FileNotFoundError):
         ve.extract_frames("does_not_exist.mp4", "/tmp/out", "A")
+
+
+def test_extract_many_missing_file_raises():
+    with pytest.raises(FileNotFoundError):
+        ve.extract_many(["does_not_exist.mp4"], "/tmp/out", "A")
+
+
+def test_extract_many_empty_list_raises():
+    with pytest.raises(ValueError):
+        ve.extract_many([], "/tmp/out", "A")
+
+
+# --- clip_index disambiguates filenames across clips -------------------------
+
+def test_frame_filename_without_clip_index_is_unchanged():
+    # Backward compatibility: single-clip extraction must produce the exact
+    # same filenames as before ``clip_index`` existed.
+    ts = datetime(2026, 7, 23, 10, 15, 30)
+    assert ve.frame_filename("A", ts, 123, "jpg") == "A_20260723_101530_000123.jpg"
+
+
+def test_frame_filename_with_clip_index_disambiguates():
+    ts = datetime(2026, 7, 23, 10, 15, 30)
+    name0 = ve.frame_filename("A", ts, 30, "jpg", clip_index=0)
+    name1 = ve.frame_filename("A", ts, 30, "jpg", clip_index=1)
+    # Same timestamp + same in-clip frame index, different clip -> must differ.
+    assert name0 != name1
+    assert name0 == "A_20260723_101530_c00_000030.jpg"
+    assert name1 == "A_20260723_101530_c01_000030.jpg"
+
+
+def test_frame_filename_with_clip_index_still_parses_as_timestamp():
+    ts = datetime(2026, 7, 23, 10, 15, 30)
+    name = ve.frame_filename("A", ts, 30, "jpg", clip_index=2)
+    assert frame_loader.parse_timestamp_from_name(name) == ts
 
 
 # --- Tests that need OpenCV (skipped where cv2 isn't installed, e.g. CI) ----
@@ -112,3 +153,21 @@ def test_extract_frames_writes_files_into_non_ascii_output(tmp_path):
     written = ve.extract_frames(vid, out_dir, "A", interval_seconds=1.0)
     assert len(written) == 3
     assert all(os.path.getsize(p) > 0 for p in written)
+
+
+def test_extract_many_combines_clips_without_collisions(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    # Same declared start time on purpose -- worst case for filename
+    # collisions, since both clips will produce identical timestamps.
+    vid1 = str(tmp_path / "A_20260723_101500.mp4")
+    vid2 = str(tmp_path / "A_20260723_101500_part2.mp4")
+    _make_video(cv2, np, vid1)
+    _make_video(cv2, np, vid2)
+    out_dir = str(tmp_path / "combined")
+
+    written = ve.extract_many([vid1, vid2], out_dir, "A", interval_seconds=1.0)
+
+    assert len(written) == 6  # 3 frames per clip
+    assert len(set(written)) == 6  # no path collisions
+    assert len(set(os.listdir(out_dir))) == 6  # no files silently overwritten
