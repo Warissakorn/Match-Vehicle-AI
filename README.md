@@ -220,6 +220,36 @@ dropdown in the GUI. The embedder batches crops in chunks of
 detections can't blow past available GPU memory in one forward pass, and
 optionally runs in fp16 on CUDA (`config.USE_HALF_PRECISION_ON_CUDA`).
 
+### GPU not detected?
+
+`requirements.txt` installs plain `torch`/`torchvision`, with no CUDA-specific
+index — on some platforms (notably Windows) a plain `pip install torch` gives
+you a **CPU-only build**, even on a machine with a real NVIDIA GPU and driver.
+That build's `torch.cuda.is_available()` is always `False`, so `cuda` won't
+appear in the Device dropdown / `--device` choices — this looks identical to
+"no GPU" from the app's side, but is actually just the wrong wheel installed.
+
+The app now tells you which case you're in: the GUI's Device row and the
+CLI's `Device:` line both print a reason (e.g. *"This PyTorch build has no
+CUDA support (CPU-only wheel)"* vs. *"No CUDA-capable GPU or driver
+detected"*) whenever CUDA isn't available.
+
+Check what you actually have installed:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.version.cuda)"
+```
+
+If `torch.version.cuda` prints `None`, reinstall a CUDA build — pick the
+command for your CUDA driver version at
+[pytorch.org/get-started/locally](https://pytorch.org/get-started/locally/),
+e.g.:
+
+```bash
+pip uninstall torch torchvision
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
 ## Detection models
 
 You can choose which YOLO model does the detection and keep the weights current.
