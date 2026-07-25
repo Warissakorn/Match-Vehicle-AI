@@ -458,18 +458,27 @@ class ReIDApp(ttk.Frame):
             try:
                 devices = device_module.list_available_devices()
                 desc = device_module.describe_device(device_module.resolve_device("auto"))
+                # "cuda" missing from the list usually isn't "no GPU" -- it's
+                # commonly a CPU-only torch wheel (see README's GPU section).
+                # Surface the actual reason instead of leaving the user to
+                # guess why the dropdown doesn't offer it.
+                reason = "" if "cuda" in devices else device_module.diagnose_cuda_unavailable()
             except Exception:
-                devices, desc = ["auto", "cpu"], "CPU"
-            q.put((devices, desc))
+                log.warning("Device probe failed", exc_info=True)
+                devices, desc, reason = ["auto", "cpu"], "CPU", ""
+            q.put((devices, desc, reason))
 
         def poll():
             try:
-                devices, desc = q.get_nowait()
+                devices, desc, reason = q.get_nowait()
             except queue.Empty:
                 self.after(150, poll)
                 return
             self._device_combo.config(values=devices)
-            self.device_status.set(f"auto -> {desc}")
+            status = f"auto -> {desc}"
+            if reason:
+                status += f"  ({reason})"
+            self.device_status.set(status)
 
         threading.Thread(target=worker, daemon=True).start()
         self.after(150, poll)

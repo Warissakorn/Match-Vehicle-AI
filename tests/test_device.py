@@ -2,9 +2,30 @@
 the CUDA probe is injectable so these run the same in CI as anywhere else).
 """
 
+import sys
+import types
+
 import pytest
 
 from mash_reid import device
+
+
+def _fake_torch(cuda_available, cuda_built, raise_on_is_available=False):
+    """A minimal stand-in for the ``torch`` module, just deep enough for
+    ``diagnose_cuda_unavailable`` -- ``torch.cuda.is_available()`` and
+    ``torch.backends.cuda.is_built()``.
+    """
+    mod = types.ModuleType("torch")
+
+    def is_available():
+        if raise_on_is_available:
+            raise RuntimeError("simulated CUDA init failure")
+        return cuda_available
+
+    mod.cuda = types.SimpleNamespace(is_available=is_available)
+    mod.backends = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_built=lambda: cuda_built))
+    return mod
 
 
 def test_auto_none_resolves_to_cpu_when_no_cuda():
@@ -86,3 +107,55 @@ def test_torch_cuda_available_false_without_torch(monkeypatch):
 def test_torch_cuda_available_reflects_real_torch_when_installed():
     torch = pytest.importorskip("torch")
     assert device._torch_cuda_available() == bool(torch.cuda.is_available())
+
+
+# --- diagnose_cuda_unavailable: distinguishes *why* CUDA isn't available ----
+
+def test_diagnose_returns_empty_when_cuda_available(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda_available=True, cuda_built=True))
+    assert device.diagnose_cuda_unavailable() == ""
+
+
+def test_diagnose_no_torch_installed(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+
+    def fake_import(name, *args, **kwargs):
+        if name == "torch":
+            raise ImportError("no torch")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert device.diagnose_cuda_unavailable() == "PyTorch is not installed"
+
+
+def test_diagnose_cpu_only_wheel(monkeypatch):
+    # torch installed, but never compiled with CUDA support -- the gotcha a
+    # plain `pip install torch` produces on some platforms.
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda_available=False, cuda_built=False))
+    reason = device.diagnose_cuda_unavailable()
+    assert "CPU-only wheel" in reason
+
+
+def test_diagnose_cuda_build_but_no_gpu(monkeypatch):
+    # torch has real CUDA support, but no GPU/driver on this machine.
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda_available=False, cuda_built=True))
+    reason = device.diagnose_cuda_unavailable()
+    assert reason == "No CUDA-capable GPU or driver detected"
+
+
+def test_diagnose_handles_unexpected_probe_error(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules, "torch",
+        _fake_torch(cuda_available=False, cuda_built=True, raise_on_is_available=True))
+    reason = device.diagnose_cuda_unavailable()
+    assert "Could not determine CUDA availability" in reason
+
+
+def test_diagnose_real_torch_does_not_raise():
+    # Whatever the real installed torch build reports, this must never raise.
+    pytest.importorskip("torch")
+    reason = device.diagnose_cuda_unavailable()
+    assert isinstance(reason, str)
