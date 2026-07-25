@@ -23,6 +23,9 @@ logs/
 # Labeled training pairs exported from the GUI
 training_data/
 
+# Remembered GUI settings (folders, sliders, device, ...)
+settings.json
+
 # Sample / large media
 samples/*.jpg
 samples/*.jpeg

@@ -55,15 +55,26 @@ def frame_timestamp(start_time: datetime, frame_index: int, fps: float) -> datet
     return start_time + timedelta(seconds=offset)
 
 
-def frame_filename(point: str, ts: datetime, frame_index: int, ext: str = "jpg") -> str:
+def frame_filename(
+    point: str, ts: datetime, frame_index: int, ext: str = "jpg",
+    clip_index: int | None = None,
+) -> str:
     """Filename encoding the timestamp (second precision) plus a unique index.
 
     The zero-padded ``frame_index`` keeps names unique when several frames fall
     in the same second; ``frame_loader`` still parses the ``YYYYMMDD_HHMMSS``
     part for the capture time.
+
+    ``clip_index`` disambiguates frames written by ``extract_many`` from
+    multiple clips into one shared folder -- ``frame_index`` alone resets to
+    0 for every clip, so two clips can otherwise produce the exact same
+    filename (same second, same in-clip frame number). Left as ``None`` for
+    single-clip extraction, which keeps filenames identical to before this
+    parameter existed.
     """
     ext = ext.lstrip(".")
-    return f"{point}_{ts:%Y%m%d_%H%M%S}_{frame_index:06d}.{ext}"
+    clip_part = f"_c{clip_index:02d}" if clip_index is not None else ""
+    return f"{point}_{ts:%Y%m%d_%H%M%S}{clip_part}_{frame_index:06d}.{ext}"
 
 
 def extract_frames(
@@ -74,11 +85,14 @@ def extract_frames(
     start_time: datetime | None = None,
     image_ext: str = "jpg",
     progress=None,
+    clip_index: int | None = None,
 ) -> list[str]:
     """Extract frames from ``video_path`` into ``output_dir`` for ``point``.
 
     Returns the list of written frame paths. ``progress`` is an optional
-    callable ``(done, total, message)`` for GUIs/CLIs.
+    callable ``(done, total, message)`` for GUIs/CLIs. ``clip_index`` is
+    passed through to ``frame_filename`` -- see ``extract_many`` for why it
+    matters when combining several clips into one output folder.
     """
     # Validate inputs before importing the heavy dep, so bad paths fail cleanly
     # even where OpenCV isn't installed.
@@ -118,7 +132,7 @@ def extract_frames(
                 break
             if frame_index % step == 0:
                 ts = frame_timestamp(start, frame_index, fps)
-                name = frame_filename(point, ts, frame_index, image_ext)
+                name = frame_filename(point, ts, frame_index, image_ext, clip_index=clip_index)
                 out_path = os.path.join(output_dir, name)
                 _write_image(cv2, out_path, frame, image_ext)
                 written.append(out_path)
@@ -143,8 +157,65 @@ def extract_frames(
     return written
 
 
+def extract_many(
+    video_paths: list[str],
+    output_dir: str,
+    point: str,
+    interval_seconds: float = 1.0,
+    image_ext: str = "jpg",
+    progress=None,
+) -> list[str]:
+    """Extract frames from several clips of the same point into one folder.
+
+    Useful when a point's footage was recorded as multiple video files (e.g.
+    the camera splits every hour) instead of one continuous clip. Each
+    video's own start time is resolved independently from its own filename
+    (else its own mtime) -- there's no single shared clock to override the
+    way ``extract_frames``'s ``start_time`` does for one video. Frame
+    filenames are disambiguated per clip (see ``frame_filename``'s
+    ``clip_index``) so two clips can never collide on the same output name.
+
+    Returns the combined list of written frame paths, across all clips, in
+    the order the clips were given. ``progress(clips_done, clips_total,
+    message)`` is called once per *clip* (not per frame) -- coarser than
+    ``extract_frames``'s own progress, which is the right granularity once
+    you're combining several clips into a single run.
+    """
+    if not video_paths:
+        raise ValueError("No videos given")
+    for path in video_paths:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Video not found: {path}")
+
+    os.makedirs(output_dir, exist_ok=True)
+    written: list[str] = []
+    total = len(video_paths)
+    for idx, video_path in enumerate(video_paths):
+        clip_written = extract_frames(
+            video_path, output_dir, point,
+            interval_seconds=interval_seconds, image_ext=image_ext,
+            clip_index=idx,
+        )
+        written.extend(clip_written)
+        if progress:
+            progress(idx + 1, total,
+                     f"{os.path.basename(video_path)}: {len(clip_written)} frame(s)")
+    return written
+
+
 def default_output_dir(video_path: str, point: str) -> str:
     """A reasonable default frames folder next to the video."""
     base = os.path.splitext(os.path.basename(video_path))[0]
     parent = os.path.dirname(os.path.abspath(video_path))
     return os.path.join(parent, f"{base}_frames_{point}")
+
+
+def default_output_dir_multi(video_paths: list[str], point: str) -> str:
+    """Default frames folder for ``extract_many`` -- next to the first clip.
+
+    Unlike ``default_output_dir`` (named after one video's basename), several
+    clips don't share a single meaningful basename, so this just names the
+    folder after the point instead.
+    """
+    parent = os.path.dirname(os.path.abspath(video_paths[0]))
+    return os.path.join(parent, f"{point}_frames")

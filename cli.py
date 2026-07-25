@@ -29,6 +29,19 @@ def _fmt_ts(dt) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _ocr_folder(folder: str, point: str, device, show_progress) -> None:
+    """OCR every frame in ``folder`` and write the timestamp sidecar."""
+    from mash_reid import timestamp_ocr
+
+    names = sorted(
+        f for f in os.listdir(folder)
+        if os.path.splitext(f)[1].lower() in config.IMAGE_EXTENSIONS
+    )
+    print(f"OCR-ing timestamps for point {point} ({len(names)} frame(s)) ...")
+    results = timestamp_ocr.ocr_folder(folder, names, device=device, progress=show_progress)
+    print(f"\n  Read {len(results)}/{len(names)} timestamp(s) from the frame overlay.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Cross-point vehicle Re-ID (A vs B).")
     parser.add_argument("--dir-a", required=True, help="Folder of frames from point A")
@@ -44,6 +57,9 @@ def main(argv: list[str] | None = None) -> int:
                              "or $MASH_MODELS_DIR)")
     parser.add_argument("--conf", type=float, default=config.DEFAULT_DETECTION_CONF,
                         help="YOLO detection confidence")
+    parser.add_argument("--device", default=None,
+                        help="Compute device: 'auto' (default, uses CUDA if available), "
+                             "'cpu', 'cuda', or 'cuda:N'")
     parser.add_argument("--min-travel", type=float, default=0.0,
                         help="Min seconds between passing A and B")
     parser.add_argument("--max-travel", type=float, default=600.0,
@@ -54,6 +70,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Force a one-to-one A/B assignment (Hungarian)")
     parser.add_argument("--no-cache", action="store_true",
                         help="Do not read/write the on-disk detection cache")
+    parser.add_argument("--ocr-time", action="store_true",
+                        help="Read each frame's true timestamp via OCR before "
+                             "processing (writes a sidecar, reused on later runs)")
     parser.add_argument("--log-dir", default=logging_setup.DEFAULT_LOG_DIR,
                         help="Folder for run log files (default: logs/)")
     parser.add_argument("--verbose", action="store_true",
@@ -65,12 +84,25 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Logging to {log_path}")
 
     pcfg = config.PipelineConfig(
-        yolo_weights=args.model, detection_conf=args.conf, models_dir=args.models_dir)
+        yolo_weights=args.model, detection_conf=args.conf, models_dir=args.models_dir,
+        device=args.device)
     print(f"Detection model: {args.model}")
     detector, embedder = pipeline.build_pipeline(pcfg)
 
+    from mash_reid.device import describe_device, diagnose_cuda_unavailable, resolve_device
+    resolved = resolve_device(args.device)
+    print(f"Device: {describe_device(resolved)}")
+    if resolved == "cpu":
+        reason = diagnose_cuda_unavailable()
+        if reason:
+            print(f"  (CUDA not used: {reason})")
+
     def show_progress(done, total, msg):
         print(f"  [{done}/{total}] {msg}", end="\r", flush=True)
+
+    if args.ocr_time:
+        _ocr_folder(args.dir_a, "A", pcfg.device, show_progress)
+        _ocr_folder(args.dir_b, "B", pcfg.device, show_progress)
 
     print("Processing point A ...")
     res_a = pipeline.process_point(args.dir_a, "A", detector, embedder, pcfg,

@@ -21,6 +21,7 @@ Run with:  python app/gui.py
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import sys
@@ -41,10 +42,19 @@ from mash_reid import (  # noqa: E402
     model_manager,
     model_registry,
     pipeline,
+    settings,
+    sysmon,
+    timestamp_ocr,
     training_export,
     video_extractor,
 )
 from mash_reid.matcher import VehicleRecord  # noqa: E402
+
+# Named under the "mash_reid" tree (rather than __name__, which would be
+# "app.gui" or "__main__") so this module's log lines land in the same
+# rotating file the rest of the package writes to -- logging_setup only
+# attaches handlers to "mash_reid" and its descendants.
+log = logging.getLogger("mash_reid.gui")
 
 THUMB_SIZE = (140, 110)
 
@@ -107,11 +117,14 @@ class ScrollableThumbs(ttk.Frame):
         self._refs.clear()
 
     def add_card(self, record: VehicleRecord, caption: str, on_click, on_double,
-                on_confirm=None, on_reject=None):
+                on_confirm=None, on_reject=None, subcaption: str | None = None):
         """Add a thumbnail card. If ``on_confirm``/``on_reject`` (no-arg
         callables) are given, a "Same"/"Different" button pair is shown below
         the caption for labeling this candidate as training data; both
-        disable themselves after either is clicked.
+        disable themselves after either is clicked. ``subcaption`` -- when
+        given -- is shown as a second, smaller line (source frame filename
+        and where its timestamp came from) so a result can be traced back to
+        the exact image it was cropped from.
         """
         idx = len(self._refs)
         photo = _load_thumb(record)
@@ -126,6 +139,9 @@ class ScrollableThumbs(ttk.Frame):
         btn.bind("<Double-Button-1>", lambda e: on_double(record))
 
         ttk.Label(card, text=caption, font=("TkDefaultFont", 8)).pack()
+        if subcaption:
+            ttk.Label(card, text=subcaption, font=("TkDefaultFont", 7),
+                      foreground="#666666").pack()
 
         if on_confirm or on_reject:
             row = ttk.Frame(card)
@@ -159,19 +175,32 @@ class ReIDApp(ttk.Frame):
         super().__init__(master, padding=8)
         self.pack(fill="both", expand=True)
 
-        self.dir_a = tk.StringVar()
-        self.dir_b = tk.StringVar()
         # Detection model: keep a display<->key mapping so the combobox can show
         # friendly names while we pass the weights key to the pipeline.
         self._model_display_to_key = {m.display_name: m.key for m in model_registry.all_models()}
-        self.model_key = tk.StringVar(value=config.YOLO_WEIGHTS)
-        self.model_display = tk.StringVar(value=model_registry.default().display_name)
-        self.threshold = tk.DoubleVar(value=config.DEFAULT_SIMILARITY_THRESHOLD)
-        self.det_conf = tk.DoubleVar(value=config.DEFAULT_DETECTION_CONF)
-        self.min_travel = tk.DoubleVar(value=0.0)
-        self.max_travel = tk.DoubleVar(value=600.0)
-        self.use_gate = tk.BooleanVar(value=True)
-        self.one_to_one = tk.BooleanVar(value=False)
+        self._model_key_to_display = {m.key: m.display_name for m in model_registry.all_models()}
+
+        saved = settings.load()  # {} if this is the first run, or the file's gone/corrupt
+
+        self.dir_a = tk.StringVar(value=saved.get("dir_a", ""))
+        self.dir_b = tk.StringVar(value=saved.get("dir_b", ""))
+        model_key = saved.get("model_key", config.YOLO_WEIGHTS)
+        self.model_key = tk.StringVar(value=model_key)
+        self.model_display = tk.StringVar(
+            value=self._model_key_to_display.get(model_key, model_registry.default().display_name))
+        self.device = tk.StringVar(value=saved.get("device", "auto"))
+        self.threshold = tk.DoubleVar(
+            value=saved.get("threshold", config.DEFAULT_SIMILARITY_THRESHOLD))
+        self.det_conf = tk.DoubleVar(
+            value=saved.get("det_conf", config.DEFAULT_DETECTION_CONF))
+        self.min_travel = tk.DoubleVar(value=saved.get("min_travel", 0.0))
+        self.max_travel = tk.DoubleVar(value=saved.get("max_travel", 600.0))
+        self.use_gate = tk.BooleanVar(value=saved.get("use_gate", True))
+        self.one_to_one = tk.BooleanVar(value=saved.get("one_to_one", False))
+        # Shared with VideoExtractDialog so the last-used interval and video
+        # folder are remembered across dialog opens, not just within one.
+        self.extract_interval = tk.DoubleVar(value=saved.get("extract_interval", 1.0))
+        self.last_video_dir = tk.StringVar(value=saved.get("last_video_dir", ""))
         self.status = tk.StringVar(value="Select folders for point A and B, then Process.")
 
         self._res_a = None
@@ -184,6 +213,7 @@ class ReIDApp(ttk.Frame):
         self._queue: queue.Queue = queue.Queue()
 
         self._build_controls()
+        self._build_status_bar()
         self._build_panels()
 
     # --- UI construction ---------------------------------------------------
@@ -203,6 +233,8 @@ class ReIDApp(ttk.Frame):
                        command=lambda v=var: self._browse(v)).pack(side="left")
             ttk.Button(row, text="From video...",
                        command=lambda v=var, p=pt: self._extract_from_video(v, p)).pack(side="left", padx=(4, 0))
+            ttk.Button(row, text="Fix times (OCR)...",
+                       command=lambda v=var, p=pt: self._fix_times(v, p)).pack(side="left", padx=(4, 0))
 
         # Detection model picker + manager
         mrow = ttk.Frame(top)
@@ -219,6 +251,20 @@ class ReIDApp(ttk.Frame):
         ttk.Label(mrow, textvariable=self.model_status, width=14,
                   font=("TkDefaultFont", 8)).pack(side="left", padx=(6, 0))
         self._refresh_model_status()
+
+        # Compute device: "auto" resolves to CUDA if a GPU is present, else
+        # CPU. Probing CUDA touches torch, so it's deferred to a background
+        # thread rather than blocking window construction.
+        drow = ttk.Frame(top)
+        drow.pack(fill="x", pady=2)
+        ttk.Label(drow, text="Device", width=14).pack(side="left")
+        self._device_combo = ttk.Combobox(
+            drow, textvariable=self.device, state="readonly", values=["auto"], width=10)
+        self._device_combo.pack(side="left", padx=4)
+        self.device_status = tk.StringVar(value="probing...")
+        ttk.Label(drow, textvariable=self.device_status,
+                  font=("TkDefaultFont", 8)).pack(side="left", padx=(6, 0))
+        self._probe_devices()
 
         # Sliders / options
         opts = ttk.Frame(top)
@@ -237,8 +283,37 @@ class ReIDApp(ttk.Frame):
         self._process_btn = ttk.Button(toggles, text="Process", command=self._on_process)
         self._process_btn.pack(side="right", padx=4)
 
-        ttk.Label(self, textvariable=self.status, relief="sunken",
-                  anchor="w").pack(fill="x", pady=(4, 6))
+    def _build_status_bar(self):
+        """Bottom-anchored status + resource bar.
+
+        Packed with side="bottom" *before* the gallery panes (which pack
+        with fill="both", expand=True) so it stays pinned to the window's
+        bottom edge regardless of resizing -- Tkinter's pack manager
+        allocates side="bottom" slots from whatever was packed so far, so a
+        bottom bar has to claim its space before an expanding widget grabs
+        the rest of the cavity. The status label previously lived here
+        without ever actually anchoring to the bottom (it just sat between
+        the controls and the galleries).
+        """
+        bar = ttk.Frame(self)
+        bar.pack(side="bottom", fill="x", pady=(4, 0))
+        ttk.Label(bar, textvariable=self.status, relief="sunken",
+                  anchor="w").pack(side="left", fill="x", expand=True)
+        self.resource_status = tk.StringVar(value="")
+        ttk.Label(bar, textvariable=self.resource_status, relief="sunken",
+                  anchor="e", font=("TkDefaultFont", 8)).pack(side="right")
+        self._poll_resources()
+
+    def _poll_resources(self):
+        """Refresh the CPU/RAM/GPU readout. Best-effort: a probe failure
+        (missing psutil, no GPU, ...) shows "n/a" for that field rather than
+        breaking the loop -- see ``mash_reid.sysmon``.
+        """
+        try:
+            self.resource_status.set(sysmon.format_sample(sysmon.sample()))
+        except Exception:
+            log.debug("Resource sample failed", exc_info=True)
+        self.after(config.RESOURCE_POLL_MS, self._poll_resources)
 
     def _add_slider(self, parent, label, var, lo, hi):
         frame = ttk.Frame(parent)
@@ -292,6 +367,67 @@ class ReIDApp(ttk.Frame):
         """Open a dialog to extract frames from a video into a point folder."""
         VideoExtractDialog(self, point, folder_var)
 
+    def _fix_times(self, folder_var, point):
+        """OCR the true on-screen clock for every frame in a point's folder.
+
+        Runs once per folder (result is cached as a sidecar file, see
+        ``mash_reid.timestamp_ocr``), so this button is a one-time correction
+        rather than something that has to be re-run every Process. Uses its
+        own queue/thread pair (independent of ``_process_worker``'s) since it
+        can be triggered before or after a Process run.
+        """
+        folder = folder_var.get().strip()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showerror("No folder", f"Pick a valid folder for point {point} first.")
+            return
+
+        q: queue.Queue = queue.Queue()
+        device = self.device.get()  # read on the main thread before handing off
+        self.status.set(f"OCR-ing timestamps for point {point}...")
+
+        def worker():
+            try:
+                names = sorted(
+                    f for f in os.listdir(folder)
+                    if os.path.splitext(f)[1].lower() in config.IMAGE_EXTENSIONS
+                )
+
+                def progress(done, total, msg):
+                    q.put(("status", f"[{done}/{total}] OCR point {point}: {msg}"))
+
+                results = timestamp_ocr.ocr_folder(folder, names, device=device, progress=progress)
+                q.put(("done", (point, len(results), len(names))))
+            except Exception as exc:  # surface errors to the UI thread
+                q.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll():
+            try:
+                while True:
+                    kind, payload = q.get_nowait()
+                    if kind == "status":
+                        self.status.set(payload)
+                    elif kind == "error":
+                        self.status.set("OCR failed.")
+                        messagebox.showerror("OCR failed", payload)
+                        return
+                    elif kind == "done":
+                        pt, found, total = payload
+                        self.status.set(
+                            f"Point {pt}: read {found}/{total} timestamp(s) via OCR. "
+                            f"Click Process again to use the corrected times.")
+                        messagebox.showinfo(
+                            "OCR complete",
+                            f"Read {found}/{total} timestamp(s) for point {pt}.\n\n"
+                            f"Click Process again to use the corrected times.")
+                        return
+            except queue.Empty:
+                pass
+            self.after(150, poll)
+
+        self.after(150, poll)
+
     def _on_model_selected(self, _event=None):
         key = self._model_display_to_key.get(self.model_display.get())
         if key:
@@ -305,6 +441,47 @@ class ReIDApp(ttk.Frame):
 
     def _open_model_manager(self):
         ModelManagerDialog(self, on_close=self._refresh_model_status)
+
+    def _probe_devices(self):
+        """Populate the Device dropdown once CUDA availability is known.
+
+        Probing touches torch (a heavy, deferred import), so it runs in a
+        background thread; only the queue-drained callback on the main
+        thread ever touches the Tk widgets, same convention as every other
+        background task in this file.
+        """
+        q: queue.Queue = queue.Queue()
+
+        def worker():
+            from mash_reid import device as device_module
+
+            try:
+                devices = device_module.list_available_devices()
+                desc = device_module.describe_device(device_module.resolve_device("auto"))
+                # "cuda" missing from the list usually isn't "no GPU" -- it's
+                # commonly a CPU-only torch wheel (see README's GPU section).
+                # Surface the actual reason instead of leaving the user to
+                # guess why the dropdown doesn't offer it.
+                reason = "" if "cuda" in devices else device_module.diagnose_cuda_unavailable()
+            except Exception:
+                log.warning("Device probe failed", exc_info=True)
+                devices, desc, reason = ["auto", "cpu"], "CPU", ""
+            q.put((devices, desc, reason))
+
+        def poll():
+            try:
+                devices, desc, reason = q.get_nowait()
+            except queue.Empty:
+                self.after(150, poll)
+                return
+            self._device_combo.config(values=devices)
+            status = f"auto -> {desc}"
+            if reason:
+                status += f"  ({reason})"
+            self.device_status.set(status)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(150, poll)
 
     def _current_match_config(self) -> config.MatchConfig:
         return config.MatchConfig(
@@ -330,7 +507,8 @@ class ReIDApp(ttk.Frame):
     def _process_worker(self, dir_a, dir_b):
         try:
             pcfg = config.PipelineConfig(
-                yolo_weights=self.model_key.get(), detection_conf=self.det_conf.get())
+                yolo_weights=self.model_key.get(), detection_conf=self.det_conf.get(),
+                device=self.device.get())
             detector, embedder = pipeline.build_pipeline(pcfg)
 
             def progress(done, total, msg):
@@ -386,6 +564,31 @@ class ReIDApp(ttk.Frame):
         self._populate_a()
         self._last_selected_a = None
         self._populate_b_all()
+        self._save_settings()
+
+    def _collect_settings(self) -> dict:
+        """Current values of everything ``mash_reid.settings`` remembers."""
+        return {
+            "dir_a": self.dir_a.get(),
+            "dir_b": self.dir_b.get(),
+            "model_key": self.model_key.get(),
+            "device": self.device.get(),
+            "threshold": self.threshold.get(),
+            "det_conf": self.det_conf.get(),
+            "min_travel": self.min_travel.get(),
+            "max_travel": self.max_travel.get(),
+            "use_gate": self.use_gate.get(),
+            "one_to_one": self.one_to_one.get(),
+            "extract_interval": self.extract_interval.get(),
+            "last_video_dir": self.last_video_dir.get(),
+        }
+
+    def _save_settings(self):
+        """Best-effort settings save -- see ``mash_reid.settings.save``."""
+        try:
+            settings.save(self._collect_settings())
+        except Exception:
+            log.warning("Could not save settings", exc_info=True)
 
     def _cluster_tag(self, clusters: dict[int, int], record_id: int) -> str:
         """Return a " •GrpN(xK)" suffix when this record shares a same-point
@@ -397,6 +600,17 @@ class ReIDApp(ttk.Frame):
         size = sum(1 for c in clusters.values() if c == cluster_id)
         return f"  •Grp{cluster_id}(x{size})" if size > 1 else ""
 
+    def _subcaption(self, rec: VehicleRecord) -> str:
+        """Second caption line: source frame filename + where its timestamp
+        came from (ocr/filename/exif/mtime) -- lets you trace a result back
+        to the exact frame and confirm at a glance whether OCR-corrected
+        times are actually in effect.
+        """
+        name = os.path.basename(rec.frame_path)
+        if len(name) > 22:
+            name = name[:10] + "…" + name[-9:]
+        return f"{name}  [{rec.timestamp_source}]"
+
     def _populate_a(self):
         self.gallery_a.clear()
         if not self._res_a:
@@ -404,9 +618,10 @@ class ReIDApp(ttk.Frame):
         records = self._res_a.records
         shown = records[: config.DEFAULT_MAX_GALLERY_THUMBNAILS]
         for rec in shown:
-            cap = f"A#{rec.record_id}  {rec.timestamp:%H:%M:%S}"
+            cap = f"A#{rec.record_id}  {rec.timestamp:%Y-%m-%d %H:%M:%S}"
             cap += self._cluster_tag(self._a_clusters, rec.record_id)
-            self.gallery_a.add_card(rec, cap, self._on_select_a, self._on_double)
+            self.gallery_a.add_card(rec, cap, self._on_select_a, self._on_double,
+                                    subcaption=self._subcaption(rec))
         if len(shown) < len(records):
             self.status.set(
                 f"Point A: showing first {len(shown)} of {len(records)} vehicles "
@@ -440,9 +655,10 @@ class ReIDApp(ttk.Frame):
         else:
             self.b_view_label.set("Showing: all point B vehicles")
         for rec in shown:
-            cap = f"B#{rec.record_id}  {rec.timestamp:%H:%M:%S}"
+            cap = f"B#{rec.record_id}  {rec.timestamp:%Y-%m-%d %H:%M:%S}"
             cap += self._cluster_tag(self._b_clusters, rec.record_id)
-            self.gallery_b.add_card(rec, cap, lambda r: None, self._on_double)
+            self.gallery_b.add_card(rec, cap, lambda r: None, self._on_double,
+                                    subcaption=self._subcaption(rec))
 
     def _on_select_a(self, rec_a: VehicleRecord):
         if not self._res_b:
@@ -465,6 +681,7 @@ class ReIDApp(ttk.Frame):
                 rec_b, cap, lambda r: None, self._on_double,
                 on_confirm=lambda a=rec_a, b=rec_b, s=cand.similarity: self._label_pair(a, b, s, True),
                 on_reject=lambda a=rec_a, b=rec_b, s=cand.similarity: self._label_pair(a, b, s, False),
+                subcaption=self._subcaption(rec_b),
             )
 
     def _label_pair(self, rec_a: VehicleRecord, rec_b: VehicleRecord,
@@ -495,10 +712,18 @@ class ReIDApp(ttk.Frame):
 
 
 class VideoExtractDialog(tk.Toplevel):
-    """Modal dialog: pick a video, extract timestamped frames for one point.
+    """Modal dialog: pick one or more videos, extract timestamped frames for
+    one point.
 
-    On success the output folder is written back into the point's folder entry
-    so the user can immediately Process it.
+    A single video keeps the original workflow (editable start time, output
+    defaults to a name derived from that video). Selecting several videos at
+    once treats them as clips of the same point -- e.g. a camera that splits
+    recordings every hour -- and combines them into one output folder; each
+    clip resolves its own start time from its own filename, so the Start
+    time field doesn't apply and is disabled.
+
+    On success the output folder is written back into the point's folder
+    entry so the user can immediately Process it.
     """
 
     def __init__(self, parent, point, folder_var):
@@ -506,13 +731,19 @@ class VideoExtractDialog(tk.Toplevel):
         self.title(f"Extract frames for point {point}")
         self.point = point
         self.folder_var = folder_var
+        # Kept for two settings ReIDApp remembers across runs -- the last
+        # interval used and the last folder browsed for a video. Read with
+        # getattr() defaults so this dialog still works if ever opened with
+        # a parent that isn't a ReIDApp (e.g. in a standalone test).
+        self._app = parent
         self._queue: queue.Queue = queue.Queue()
+        self.video_paths: list[str] = []
 
-        self.video_path = tk.StringVar()
         self.out_dir = tk.StringVar()
-        self.interval = tk.DoubleVar(value=1.0)
+        default_interval = getattr(parent, "extract_interval", None)
+        self.interval = tk.DoubleVar(value=default_interval.get() if default_interval else 1.0)
         self.start_time = tk.StringVar()
-        self.status = tk.StringVar(value="Choose a video to begin.")
+        self.status = tk.StringVar(value="Choose one or more videos to begin.")
 
         self._build()
         self.transient(parent)
@@ -523,9 +754,13 @@ class VideoExtractDialog(tk.Toplevel):
 
         vrow = ttk.Frame(self)
         vrow.pack(fill="x", **pad)
-        ttk.Label(vrow, text="Video", width=10).pack(side="left")
-        ttk.Entry(vrow, textvariable=self.video_path, width=48).pack(side="left", fill="x", expand=True)
-        ttk.Button(vrow, text="Browse...", command=self._pick_video).pack(side="left", padx=4)
+        ttk.Label(vrow, text="Video(s)", width=10).pack(side="left", anchor="n")
+        self._video_list = tk.Listbox(vrow, height=4, width=48)
+        self._video_list.pack(side="left", fill="x", expand=True)
+        vbtns = ttk.Frame(vrow)
+        vbtns.pack(side="left", padx=4)
+        ttk.Button(vbtns, text="Browse...", command=self._pick_video).pack(fill="x")
+        ttk.Button(vbtns, text="Clear", command=self._clear_videos).pack(fill="x", pady=(2, 0))
 
         orow = ttk.Frame(self)
         orow.pack(fill="x", **pad)
@@ -536,8 +771,11 @@ class VideoExtractDialog(tk.Toplevel):
         srow = ttk.Frame(self)
         srow.pack(fill="x", **pad)
         ttk.Label(srow, text="Start time", width=10).pack(side="left")
-        ttk.Entry(srow, textvariable=self.start_time, width=24).pack(side="left")
-        ttk.Label(srow, text="(auto from filename; edit as YYYY-MM-DD HH:MM:SS)").pack(side="left", padx=6)
+        self._start_entry = ttk.Entry(srow, textvariable=self.start_time, width=24)
+        self._start_entry.pack(side="left")
+        self._start_hint = ttk.Label(
+            srow, text="(auto from filename; edit as YYYY-MM-DD HH:MM:SS)")
+        self._start_hint.pack(side="left", padx=6)
 
         irow = ttk.Frame(self)
         irow.pack(fill="x", **pad)
@@ -554,18 +792,44 @@ class VideoExtractDialog(tk.Toplevel):
         ttk.Button(brow, text="Close", command=self.destroy).pack(side="right", padx=4)
 
     def _pick_video(self):
-        path = filedialog.askopenfilename(
+        last_dir_var = getattr(self._app, "last_video_dir", None)
+        initial_dir = last_dir_var.get() if last_dir_var and last_dir_var.get() else None
+        paths = filedialog.askopenfilenames(
             parent=self,
+            initialdir=initial_dir,
             filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv *.webm"), ("All files", "*.*")],
         )
-        if not path:
+        if not paths:
             return
-        self.video_path.set(path)
-        # Prefill output folder and the start time parsed from the filename.
-        self.out_dir.set(video_extractor.default_output_dir(path, self.point))
-        start, source = video_extractor.resolve_start_time(path, None)
-        self.start_time.set(start.strftime("%Y-%m-%d %H:%M:%S"))
-        self.status.set(f"Start time from {source}. Adjust if needed, then Extract.")
+        self.video_paths = list(paths)
+        self._video_list.delete(0, "end")
+        for p in self.video_paths:
+            self._video_list.insert("end", os.path.basename(p))
+        if last_dir_var is not None:
+            last_dir_var.set(os.path.dirname(self.video_paths[0]))
+
+        if len(self.video_paths) == 1:
+            video = self.video_paths[0]
+            self.out_dir.set(video_extractor.default_output_dir(video, self.point))
+            start, source = video_extractor.resolve_start_time(video, None)
+            self.start_time.set(start.strftime("%Y-%m-%d %H:%M:%S"))
+            self._start_entry.config(state="normal")
+            self.status.set(f"Start time from {source}. Adjust if needed, then Extract.")
+        else:
+            # Multiple clips: each resolves its own start time, so a single
+            # shared override doesn't make sense here -- disable the field.
+            self.out_dir.set(video_extractor.default_output_dir_multi(self.video_paths, self.point))
+            self.start_time.set("")
+            self._start_entry.config(state="disabled")
+            self.status.set(
+                f"{len(self.video_paths)} clips selected. Each resolves its own "
+                f"start time from its filename; they'll be combined into one folder.")
+
+    def _clear_videos(self):
+        self.video_paths = []
+        self._video_list.delete(0, "end")
+        self._start_entry.config(state="normal")
+        self.status.set("Choose one or more videos to begin.")
 
     def _pick_out(self):
         path = filedialog.askdirectory(parent=self)
@@ -585,38 +849,54 @@ class VideoExtractDialog(tk.Toplevel):
         raise ValueError(f"Bad start time '{text}'. Use YYYY-MM-DD HH:MM:SS.")
 
     def _start(self):
-        video = self.video_path.get().strip()
         out = self.out_dir.get().strip()
-        if not os.path.isfile(video):
-            messagebox.showerror("No video", "Please choose a valid video file.", parent=self)
+        if not self.video_paths:
+            messagebox.showerror("No video", "Please choose at least one video file.", parent=self)
+            return
+        if not all(os.path.isfile(v) for v in self.video_paths):
+            messagebox.showerror("No video", "One or more selected videos no longer exist.", parent=self)
             return
         if not out:
             messagebox.showerror("No output", "Please choose an output folder.", parent=self)
             return
-        try:
-            start_dt = self._parse_start()
-        except ValueError as exc:
-            messagebox.showerror("Invalid start time", str(exc), parent=self)
-            return
+
+        start_dt = None
+        if len(self.video_paths) == 1:
+            try:
+                start_dt = self._parse_start()
+            except ValueError as exc:
+                messagebox.showerror("Invalid start time", str(exc), parent=self)
+                return
+
+        interval = self.interval.get()
+        default_interval = getattr(self._app, "extract_interval", None)
+        if default_interval is not None:
+            default_interval.set(interval)  # remember for the next time this dialog opens
 
         self._extract_btn.config(state="disabled")
         self.status.set("Extracting frames...")
         thread = threading.Thread(
-            target=self._worker, args=(video, out, start_dt, self.interval.get()), daemon=True
+            target=self._worker, args=(list(self.video_paths), out, start_dt, interval),
+            daemon=True,
         )
         thread.start()
         self.after(100, self._poll)
 
-    def _worker(self, video, out, start_dt, interval):
+    def _worker(self, videos, out, start_dt, interval):
         try:
             def progress(done, total, msg):
                 total_str = str(total) if total else "?"
                 self._queue.put(("status", f"[{done}/{total_str}] {msg}"))
 
-            written = video_extractor.extract_frames(
-                video, out, self.point, interval_seconds=interval,
-                start_time=start_dt, progress=progress,
-            )
+            if len(videos) == 1:
+                written = video_extractor.extract_frames(
+                    videos[0], out, self.point, interval_seconds=interval,
+                    start_time=start_dt, progress=progress,
+                )
+            else:
+                written = video_extractor.extract_many(
+                    videos, out, self.point, interval_seconds=interval, progress=progress,
+                )
             self._queue.put(("done", (out, len(written))))
         except Exception as exc:
             self._queue.put(("error", str(exc)))
@@ -798,6 +1078,12 @@ def main():
     root.geometry("1100x760")
     app = ReIDApp(root)
     app.status.set(f"Ready. Logging to {log_path}")
+
+    def on_close():
+        app._save_settings()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
 
 

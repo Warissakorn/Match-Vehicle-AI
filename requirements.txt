@@ -6,6 +6,8 @@ opencv-python>=4.8.0     # image IO, drawing bounding boxes
 numpy>=1.24.0            # embeddings / similarity math
 scipy>=1.10.0            # Hungarian assignment (linear_sum_assignment)
 Pillow>=9.5.0            # image handling for Tkinter thumbnails + EXIF
+easyocr>=1.7.0           # read the true capture time burned into CCTV frames
+psutil>=5.9.0            # CPU/RAM usage for the GUI's resource bar
 
 # Testing
 pytest>=7.4.0

@@ -3,9 +3,12 @@
 The timestamp is what powers the temporal gate in matching (a vehicle passes A
 before it passes B). We derive it, in priority order, from:
 
-    1. The filename, using the regex/format pairs in ``config.TIMESTAMP_PATTERNS``.
-    2. EXIF ``DateTimeOriginal`` (if the image carries it).
-    3. The file modification time (always available fallback).
+    1. The OCR timestamp sidecar (``mash_reid.timestamp_ocr``), if the folder
+       has one -- this reflects the clock actually burned into the footage,
+       so it wins over every other source when present.
+    2. The filename, using the regex/format pairs in ``config.TIMESTAMP_PATTERNS``.
+    3. EXIF ``DateTimeOriginal`` (if the image carries it).
+    4. The file modification time (always available fallback).
 
 Only ``parse_timestamp`` touches the filesystem for EXIF; the pure filename
 logic is isolated so it can be unit-tested without any real files.
@@ -80,8 +83,20 @@ def _parse_timestamp_from_exif(path: str) -> datetime | None:
     return None
 
 
-def parse_timestamp(path: str) -> tuple[datetime, str]:
-    """Resolve a timestamp for ``path``, returning (timestamp, source)."""
+def parse_timestamp(path: str, ocr_timestamps: dict[str, datetime] | None = None) -> tuple[datetime, str]:
+    """Resolve a timestamp for ``path``, returning (timestamp, source).
+
+    ``ocr_timestamps`` is the folder's OCR sidecar (see
+    ``mash_reid.timestamp_ocr.load_sidecar``), keyed by basename -- when it
+    has an entry for this file, that wins over every other source, since it
+    reflects the clock actually burned into the footage rather than an
+    assumption derived from a filename or file metadata.
+    """
+    if ocr_timestamps:
+        ts = ocr_timestamps.get(os.path.basename(path))
+        if ts is not None:
+            return ts, "ocr"
+
     ts = parse_timestamp_from_name(path)
     if ts is not None:
         return ts, "filename"
@@ -98,10 +113,15 @@ def load_frames(folder: str, point: str) -> list[Frame]:
     """Load all supported images from ``folder`` as ``Frame`` objects.
 
     Frames are returned sorted by timestamp (ascending), which is the natural
-    order for downstream temporal reasoning.
+    order for downstream temporal reasoning. The OCR timestamp sidecar (if
+    any) is read once for the whole folder, not once per file.
     """
     if not os.path.isdir(folder):
         raise NotADirectoryError(f"Not a directory: {folder}")
+
+    from mash_reid.timestamp_ocr import load_sidecar  # local: avoid import cost when unused
+
+    ocr_timestamps = load_sidecar(folder)
 
     frames: list[Frame] = []
     for entry in sorted(os.listdir(folder)):
@@ -111,7 +131,7 @@ def load_frames(folder: str, point: str) -> list[Frame]:
         path = os.path.join(folder, entry)
         if not os.path.isfile(path):
             continue
-        ts, source = parse_timestamp(path)
+        ts, source = parse_timestamp(path, ocr_timestamps)
         frames.append(Frame(path=path, timestamp=ts, point=point, timestamp_source=source))
 
     frames.sort(key=lambda f: f.timestamp)
