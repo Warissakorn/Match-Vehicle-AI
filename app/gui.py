@@ -42,6 +42,7 @@ from mash_reid import (  # noqa: E402
     model_manager,
     model_registry,
     pipeline,
+    settings,
     sysmon,
     timestamp_ocr,
     training_export,
@@ -174,20 +175,32 @@ class ReIDApp(ttk.Frame):
         super().__init__(master, padding=8)
         self.pack(fill="both", expand=True)
 
-        self.dir_a = tk.StringVar()
-        self.dir_b = tk.StringVar()
         # Detection model: keep a display<->key mapping so the combobox can show
         # friendly names while we pass the weights key to the pipeline.
         self._model_display_to_key = {m.display_name: m.key for m in model_registry.all_models()}
-        self.model_key = tk.StringVar(value=config.YOLO_WEIGHTS)
-        self.model_display = tk.StringVar(value=model_registry.default().display_name)
-        self.device = tk.StringVar(value="auto")
-        self.threshold = tk.DoubleVar(value=config.DEFAULT_SIMILARITY_THRESHOLD)
-        self.det_conf = tk.DoubleVar(value=config.DEFAULT_DETECTION_CONF)
-        self.min_travel = tk.DoubleVar(value=0.0)
-        self.max_travel = tk.DoubleVar(value=600.0)
-        self.use_gate = tk.BooleanVar(value=True)
-        self.one_to_one = tk.BooleanVar(value=False)
+        self._model_key_to_display = {m.key: m.display_name for m in model_registry.all_models()}
+
+        saved = settings.load()  # {} if this is the first run, or the file's gone/corrupt
+
+        self.dir_a = tk.StringVar(value=saved.get("dir_a", ""))
+        self.dir_b = tk.StringVar(value=saved.get("dir_b", ""))
+        model_key = saved.get("model_key", config.YOLO_WEIGHTS)
+        self.model_key = tk.StringVar(value=model_key)
+        self.model_display = tk.StringVar(
+            value=self._model_key_to_display.get(model_key, model_registry.default().display_name))
+        self.device = tk.StringVar(value=saved.get("device", "auto"))
+        self.threshold = tk.DoubleVar(
+            value=saved.get("threshold", config.DEFAULT_SIMILARITY_THRESHOLD))
+        self.det_conf = tk.DoubleVar(
+            value=saved.get("det_conf", config.DEFAULT_DETECTION_CONF))
+        self.min_travel = tk.DoubleVar(value=saved.get("min_travel", 0.0))
+        self.max_travel = tk.DoubleVar(value=saved.get("max_travel", 600.0))
+        self.use_gate = tk.BooleanVar(value=saved.get("use_gate", True))
+        self.one_to_one = tk.BooleanVar(value=saved.get("one_to_one", False))
+        # Shared with VideoExtractDialog so the last-used interval and video
+        # folder are remembered across dialog opens, not just within one.
+        self.extract_interval = tk.DoubleVar(value=saved.get("extract_interval", 1.0))
+        self.last_video_dir = tk.StringVar(value=saved.get("last_video_dir", ""))
         self.status = tk.StringVar(value="Select folders for point A and B, then Process.")
 
         self._res_a = None
@@ -542,6 +555,31 @@ class ReIDApp(ttk.Frame):
         self._populate_a()
         self._last_selected_a = None
         self._populate_b_all()
+        self._save_settings()
+
+    def _collect_settings(self) -> dict:
+        """Current values of everything ``mash_reid.settings`` remembers."""
+        return {
+            "dir_a": self.dir_a.get(),
+            "dir_b": self.dir_b.get(),
+            "model_key": self.model_key.get(),
+            "device": self.device.get(),
+            "threshold": self.threshold.get(),
+            "det_conf": self.det_conf.get(),
+            "min_travel": self.min_travel.get(),
+            "max_travel": self.max_travel.get(),
+            "use_gate": self.use_gate.get(),
+            "one_to_one": self.one_to_one.get(),
+            "extract_interval": self.extract_interval.get(),
+            "last_video_dir": self.last_video_dir.get(),
+        }
+
+    def _save_settings(self):
+        """Best-effort settings save -- see ``mash_reid.settings.save``."""
+        try:
+            settings.save(self._collect_settings())
+        except Exception:
+            log.warning("Could not save settings", exc_info=True)
 
     def _cluster_tag(self, clusters: dict[int, int], record_id: int) -> str:
         """Return a " •GrpN(xK)" suffix when this record shares a same-point
@@ -684,11 +722,17 @@ class VideoExtractDialog(tk.Toplevel):
         self.title(f"Extract frames for point {point}")
         self.point = point
         self.folder_var = folder_var
+        # Kept for two settings ReIDApp remembers across runs -- the last
+        # interval used and the last folder browsed for a video. Read with
+        # getattr() defaults so this dialog still works if ever opened with
+        # a parent that isn't a ReIDApp (e.g. in a standalone test).
+        self._app = parent
         self._queue: queue.Queue = queue.Queue()
         self.video_paths: list[str] = []
 
         self.out_dir = tk.StringVar()
-        self.interval = tk.DoubleVar(value=1.0)
+        default_interval = getattr(parent, "extract_interval", None)
+        self.interval = tk.DoubleVar(value=default_interval.get() if default_interval else 1.0)
         self.start_time = tk.StringVar()
         self.status = tk.StringVar(value="Choose one or more videos to begin.")
 
@@ -739,8 +783,11 @@ class VideoExtractDialog(tk.Toplevel):
         ttk.Button(brow, text="Close", command=self.destroy).pack(side="right", padx=4)
 
     def _pick_video(self):
+        last_dir_var = getattr(self._app, "last_video_dir", None)
+        initial_dir = last_dir_var.get() if last_dir_var and last_dir_var.get() else None
         paths = filedialog.askopenfilenames(
             parent=self,
+            initialdir=initial_dir,
             filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv *.webm"), ("All files", "*.*")],
         )
         if not paths:
@@ -749,6 +796,8 @@ class VideoExtractDialog(tk.Toplevel):
         self._video_list.delete(0, "end")
         for p in self.video_paths:
             self._video_list.insert("end", os.path.basename(p))
+        if last_dir_var is not None:
+            last_dir_var.set(os.path.dirname(self.video_paths[0]))
 
         if len(self.video_paths) == 1:
             video = self.video_paths[0]
@@ -810,10 +859,15 @@ class VideoExtractDialog(tk.Toplevel):
                 messagebox.showerror("Invalid start time", str(exc), parent=self)
                 return
 
+        interval = self.interval.get()
+        default_interval = getattr(self._app, "extract_interval", None)
+        if default_interval is not None:
+            default_interval.set(interval)  # remember for the next time this dialog opens
+
         self._extract_btn.config(state="disabled")
         self.status.set("Extracting frames...")
         thread = threading.Thread(
-            target=self._worker, args=(list(self.video_paths), out, start_dt, self.interval.get()),
+            target=self._worker, args=(list(self.video_paths), out, start_dt, interval),
             daemon=True,
         )
         thread.start()
@@ -1015,6 +1069,12 @@ def main():
     root.geometry("1100x760")
     app = ReIDApp(root)
     app.status.set(f"Ready. Logging to {log_path}")
+
+    def on_close():
+        app._save_settings()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
 
 
