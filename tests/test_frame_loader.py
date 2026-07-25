@@ -2,7 +2,8 @@
 
 from datetime import datetime
 
-from mash_reid.frame_loader import parse_timestamp_from_name
+from mash_reid import timestamp_ocr
+from mash_reid.frame_loader import load_frames, parse_timestamp, parse_timestamp_from_name
 
 
 def test_parse_underscore_format():
@@ -37,3 +38,51 @@ def test_invalid_date_is_rejected():
 def test_full_path_uses_basename_only():
     result = parse_timestamp_from_name("/data/frames/A_20260723_101530.jpg")
     assert result == datetime(2026, 7, 23, 10, 15, 30)
+
+
+# --- parse_timestamp: OCR sidecar takes priority over every other source ----
+
+def test_ocr_sidecar_wins_over_filename():
+    # The filename claims 10:15:30, but the OCR'd on-screen clock says 09:00:00.
+    ocr_map = {"A_20260723_101530.jpg": datetime(2026, 7, 23, 9, 0, 0)}
+    ts, source = parse_timestamp("/data/frames/A_20260723_101530.jpg", ocr_map)
+    assert (ts, source) == (datetime(2026, 7, 23, 9, 0, 0), "ocr")
+
+
+def test_no_sidecar_entry_falls_back_to_filename():
+    ts, source = parse_timestamp("/data/frames/A_20260723_101530.jpg", {})
+    assert (ts, source) == (datetime(2026, 7, 23, 10, 15, 30), "filename")
+
+
+def test_none_sidecar_falls_back_to_filename():
+    ts, source = parse_timestamp("/data/frames/A_20260723_101530.jpg", None)
+    assert (ts, source) == (datetime(2026, 7, 23, 10, 15, 30), "filename")
+
+
+def test_load_frames_uses_ocr_sidecar(tmp_path):
+    import cv2
+    import numpy as np
+
+    img = np.zeros((10, 10, 3), dtype=np.uint8)
+    name = "random_photo.jpg"  # no timestamp in the filename
+    cv2.imwrite(str(tmp_path / name), img)
+
+    ts = datetime(2026, 7, 23, 9, 30, 0)
+    timestamp_ocr._save_sidecar(str(tmp_path), {name: ts})
+
+    frames = load_frames(str(tmp_path), "A")
+    assert len(frames) == 1
+    assert frames[0].timestamp == ts
+    assert frames[0].timestamp_source == "ocr"
+
+
+def test_load_frames_without_sidecar_falls_back_cleanly(tmp_path):
+    import cv2
+    import numpy as np
+
+    img = np.zeros((10, 10, 3), dtype=np.uint8)
+    cv2.imwrite(str(tmp_path / "A_20260723_101530.jpg"), img)
+
+    frames = load_frames(str(tmp_path), "A")
+    assert len(frames) == 1
+    assert frames[0].timestamp_source == "filename"

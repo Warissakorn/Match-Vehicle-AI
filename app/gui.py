@@ -41,6 +41,7 @@ from mash_reid import (  # noqa: E402
     model_manager,
     model_registry,
     pipeline,
+    timestamp_ocr,
     training_export,
     video_extractor,
 )
@@ -203,6 +204,8 @@ class ReIDApp(ttk.Frame):
                        command=lambda v=var: self._browse(v)).pack(side="left")
             ttk.Button(row, text="From video...",
                        command=lambda v=var, p=pt: self._extract_from_video(v, p)).pack(side="left", padx=(4, 0))
+            ttk.Button(row, text="Fix times (OCR)...",
+                       command=lambda v=var, p=pt: self._fix_times(v, p)).pack(side="left", padx=(4, 0))
 
         # Detection model picker + manager
         mrow = ttk.Frame(top)
@@ -291,6 +294,66 @@ class ReIDApp(ttk.Frame):
     def _extract_from_video(self, folder_var, point):
         """Open a dialog to extract frames from a video into a point folder."""
         VideoExtractDialog(self, point, folder_var)
+
+    def _fix_times(self, folder_var, point):
+        """OCR the true on-screen clock for every frame in a point's folder.
+
+        Runs once per folder (result is cached as a sidecar file, see
+        ``mash_reid.timestamp_ocr``), so this button is a one-time correction
+        rather than something that has to be re-run every Process. Uses its
+        own queue/thread pair (independent of ``_process_worker``'s) since it
+        can be triggered before or after a Process run.
+        """
+        folder = folder_var.get().strip()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showerror("No folder", f"Pick a valid folder for point {point} first.")
+            return
+
+        q: queue.Queue = queue.Queue()
+        self.status.set(f"OCR-ing timestamps for point {point}...")
+
+        def worker():
+            try:
+                names = sorted(
+                    f for f in os.listdir(folder)
+                    if os.path.splitext(f)[1].lower() in config.IMAGE_EXTENSIONS
+                )
+
+                def progress(done, total, msg):
+                    q.put(("status", f"[{done}/{total}] OCR point {point}: {msg}"))
+
+                results = timestamp_ocr.ocr_folder(folder, names, progress=progress)
+                q.put(("done", (point, len(results), len(names))))
+            except Exception as exc:  # surface errors to the UI thread
+                q.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll():
+            try:
+                while True:
+                    kind, payload = q.get_nowait()
+                    if kind == "status":
+                        self.status.set(payload)
+                    elif kind == "error":
+                        self.status.set("OCR failed.")
+                        messagebox.showerror("OCR failed", payload)
+                        return
+                    elif kind == "done":
+                        pt, found, total = payload
+                        self.status.set(
+                            f"Point {pt}: read {found}/{total} timestamp(s) via OCR. "
+                            f"Click Process again to use the corrected times.")
+                        messagebox.showinfo(
+                            "OCR complete",
+                            f"Read {found}/{total} timestamp(s) for point {pt}.\n\n"
+                            f"Click Process again to use the corrected times.")
+                        return
+            except queue.Empty:
+                pass
+            self.after(150, poll)
+
+        self.after(150, poll)
 
     def _on_model_selected(self, _event=None):
         key = self._model_display_to_key.get(self.model_display.get())
