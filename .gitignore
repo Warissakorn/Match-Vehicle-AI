@@ -26,10 +26,21 @@ training_data/
 # Remembered GUI settings (folders, sliders, device, ...)
 settings.json
 
-# Sample / large media
-samples/*.jpg
-samples/*.jpeg
-samples/*.png
+# Sample / large media. The ** matters: a plain `samples/*.jpg` only matches
+# files directly in samples/, so frames sitting in the per-point subfolders
+# the extractor creates (samples/A/A1_frames_A/*.jpg) slipped past it and ~1 GB
+# of them ended up committed. Keep these patterns recursive.
+samples/**/*.jpg
+samples/**/*.jpeg
+samples/**/*.png
+samples/**/*.bmp
+samples/**/*.webp
+samples/**/*.mp4
+samples/**/*.avi
+samples/**/*.mov
+samples/**/*.mkv
+# OCR timestamp sidecars belong to those frames, not in the repo.
+samples/**/.timestamps.json
 !samples/README.md
 
 # OS / editor
