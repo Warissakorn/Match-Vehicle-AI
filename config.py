@@ -160,6 +160,25 @@ RESOURCE_POLL_MS = 1000
 # runs. Lives at the project root, next to config.py, and is git-ignored.
 DEFAULT_SETTINGS_FILE = "settings.json"
 
+# Where user-saved custom OCR time patterns are kept (see
+# mash_reid.timestamp_ocr.load_saved_patterns/save_patterns), separate from
+# settings.json since it's a small named collection rather than a single
+# flat value per key.
+DEFAULT_OCR_PATTERNS_FILE = "ocr_patterns.json"
+
+# Ready-made (label, pattern) choices covering the overlay layouts reported
+# in practice, offered in the timestamp review dialog's pattern picker so
+# most users never need to write a token template themselves -- see
+# mash_reid.timestamp_ocr.compile_custom_pattern for the token vocabulary.
+BUILTIN_OCR_TIME_PATTERNS: list[tuple[str, str]] = [
+    ("ISO date, colon time", "YYYY-MO-DD HH:MI:SS"),
+    ("ISO date, dot time", "YYYY-MO-DD HH.MI.SS"),
+    ("Day/Month/Year, colon time", "DD/MO/YYYY HH:MI:SS"),
+    ("Day/Month/Year, 12-hour clock", "DD/MO/YYYY hh:MI:SS AP"),
+    ("Month/Day/Year, colon time", "MO/DD/YYYY HH:MI:SS"),
+    ("Compact, no separators", "YYYYMODDHHMISS"),
+]
+
 
 @dataclass
 class MatchConfig:

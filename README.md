@@ -169,19 +169,29 @@ timezone bug, not a fit problem).
 Pick any sampled frame to see the alternative readings the OCR considered
 (with confidence), choose a different one, or type the correct time. The fit
 re-runs instantly on every edit, so you can watch the errors settle. There's
-also a **± seconds** nudge per clip or across all clips, a **Zoom in** button
-on the selected frame's clock crop for text too small to read at the default
-size, and **Read every frame instead** as a fallback to the slow exhaustive
-pass for footage a straight line genuinely can't describe.
+also a **± seconds** nudge per clip or across all clips, and **Read every
+frame instead** as a fallback to the slow exhaustive pass for footage a
+straight line genuinely can't describe.
+
+**Zoom in...** opens the selected frame's full image (not just the small
+crop shown inline) in its own window, with the detected/marked clock region
+outlined — scroll the mouse wheel to zoom in and out around the cursor, and
+use the scrollbars to pan; useful when the clock sits near an edge the
+default crop preview doesn't show enough of.
 
 If the overlay's clock uses a layout the built-in parser can't guess (a
-different field order, an unusual separator), type its shape into the
-**custom time pattern** field using a small token vocabulary (`YYYY`, `MO`,
+different field order, an unusual separator), the **time pattern** picker —
+the only place this is edited, so there's one place to look — offers a
+dropdown of ready-made layouts (ISO with colon or dot time, day/month/year
+with a 12-hour clock, compact with no separators, ...) plus any you've saved
+yourself. Typing your own uses the same small token vocabulary (`YYYY`, `MO`,
 `DD`, `HH`/`hh`, `MI`, `SS`, `AP`; anything else is matched literally) — e.g.
-`YYYY-MO-DD HH.MI.SS` for `2026-07-24 17.40.50`. Click the **?** button next
-to the main window's version of this field for the full token list.
-**Re-parse with this pattern** applies it to the OCR text already collected
-— no new OCR call — and it's remembered for next time.
+`YYYY-MO-DD HH.MI.SS` for `2026-07-24 17.40.50`; click **?** for the full
+list. **Re-parse** applies the current pattern to the OCR text already
+collected — no new OCR call. **Save as...** names and keeps a pattern for
+reuse (stored in `ocr_patterns.json`, git-ignored); **Manage...** reviews or
+deletes saved ones. The last pattern used is remembered automatically for
+the next scan on either point.
 
 If automatic detection locks onto the wrong text entirely (a camera-model
 watermark, a plate — visible as the same confident-looking non-time reading

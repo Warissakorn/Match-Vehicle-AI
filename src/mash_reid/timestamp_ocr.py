@@ -244,6 +244,71 @@ def _parse_with_custom_pattern(text: str, compiled: "re.Pattern") -> datetime | 
         return None
 
 
+def default_patterns_path() -> str:
+    """``<project root>/ocr_patterns.json`` -- next to ``config.py``."""
+    root = os.path.dirname(os.path.abspath(config.__file__))
+    return os.path.join(root, config.DEFAULT_OCR_PATTERNS_FILE)
+
+
+def load_saved_patterns(path: str | None = None) -> dict[str, str]:
+    """User-saved named overlay patterns, on top of ``config.BUILTIN_OCR_TIME_PATTERNS``.
+
+    Best-effort, matching ``mash_reid.settings``'s discipline: a missing or
+    corrupt file just means "nothing saved yet", never a crash. Values that
+    aren't plain strings (a hand-edited or foreign file) are dropped rather
+    than passed through to a later ``compile_custom_pattern`` call.
+    """
+    path = path or default_patterns_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except Exception:
+        log.warning("Saved OCR patterns file %s unreadable, ignoring", path, exc_info=True)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def save_patterns(patterns: dict[str, str], path: str | None = None) -> None:
+    """Write ``patterns`` (name -> token template) to ``path`` as JSON.
+
+    Never raises -- a failed save is logged and otherwise silently skipped,
+    same reasoning as ``mash_reid.settings.save``: losing a saved pattern is
+    far less costly than crashing the dialog that manages them.
+    """
+    path = path or default_patterns_path()
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(patterns, fh, indent=2, sort_keys=True, ensure_ascii=False)
+    except Exception:
+        log.warning("Could not write OCR patterns to %s", path, exc_info=True)
+
+
+def strip_pattern_label(text: str) -> str:
+    """"YYYY-MO-DD HH:MI:SS   (ISO date, colon time)" -> "YYYY-MO-DD HH:MI:SS".
+
+    The pattern picker's dropdown shows entries as "pattern   (label)" so a
+    choice is both immediately usable and identifiable; this recovers the
+    bare, compilable pattern regardless of whether the text came from
+    picking one of those entries or was typed freehand (which round-trips
+    unchanged, since it has no trailing annotation to strip).
+    """
+    text = text.strip()
+    if text.endswith(")") and "   (" in text:
+        text = text.rsplit("   (", 1)[0].strip()
+    return text
+
+
+def pattern_choices() -> list[str]:
+    """Combobox values for the pattern picker: built-ins, then saved ones."""
+    choices = [f"{pattern}   ({label})" for label, pattern in config.BUILTIN_OCR_TIME_PATTERNS]
+    choices += [f"{pattern}   ({name})" for name, pattern in sorted(load_saved_patterns().items())]
+    return choices
+
+
 def parse_overlay_text(text: str, custom_pattern: "re.Pattern | None" = None) -> datetime | None:
     """Best-effort parse of a date+time burned into a CCTV frame.
 

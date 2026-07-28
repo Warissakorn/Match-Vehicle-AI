@@ -26,6 +26,9 @@ training_data/
 # Remembered GUI settings (folders, sliders, device, ...)
 settings.json
 
+# User-saved OCR time patterns (see mash_reid.timestamp_ocr.save_patterns)
+ocr_patterns.json
+
 # Sample / large media. The ** matters: a plain `samples/*.jpg` only matches
 # files directly in samples/, so frames sitting in the per-point subfolders
 # the extractor creates (samples/A/A1_frames_A/*.jpg) slipped past it and ~1 GB

@@ -92,31 +92,110 @@ def _show_full_frame(parent, record: VehicleRecord):
     label.pack()
 
 
-def _show_zoomed_crop(parent, crop, title: str, min_width: int = 900, max_width: int = 1400):
-    """Popup showing a small crop (e.g. a clock region) enlarged and readable.
+class FrameZoomDialog(tk.Toplevel):
+    """Full frame, scrollable and mouse-wheel zoomable.
 
-    The review dialog's detail pane caps its crop at ~420 px so several rows
-    of context fit on screen at once; that's too small to make out a clock's
-    digits with confidence, which is exactly the judgment call the dialog
-    exists to support. Upscales with LANCZOS (smoother than nearest-neighbor
-    for reading text, unlike pixel-art) to a comfortable minimum width, but
-    never past what would push the window off a typical screen.
+    Replaces an earlier version that upscaled just the tiny detected clock
+    crop: that clipped the view to whatever region auto-detection (or a
+    manually drawn box) happened to land on, so a clock sitting at the edge
+    of frame -- or a region drawn a little too tight -- was invisible no
+    matter how far it was enlarged. Showing the whole frame instead, with
+    the region outlined for reference, means the on-screen clock is findable
+    wherever it actually is.
+
+    Opens at a modest fit-to-window size rather than a large fixed popup;
+    the scroll wheel zooms in/out around the cursor, and scrollbars pan
+    once the image is larger than the window.
     """
-    from PIL import Image, ImageTk
 
-    img = Image.fromarray(crop[:, :, ::-1])  # cv2 gives BGR, PIL wants RGB
-    scale = min_width / img.width
-    scale = min(scale, max_width / img.width)  # never exceed max_width either
-    if scale > 1.0:
-        img = img.resize((int(img.width * scale), int(img.height * scale)),
-                         Image.Resampling.LANCZOS)
+    INITIAL_SIZE = (720, 520)
+    MIN_SCALE, MAX_SCALE = 0.2, 8.0
+    WHEEL_STEP = 1.15
 
-    top = tk.Toplevel(parent)
-    top.title(title)
-    photo = ImageTk.PhotoImage(img)
-    label = tk.Label(top, image=photo)
-    label.image = photo  # keep a reference
-    label.pack()
+    def __init__(self, parent, image_path: str, title: str,
+                region: tuple[int, int, int, int] | None = None):
+        super().__init__(parent)
+        self.title(title)
+        self._photo = None  # keep-alive ref
+
+        from PIL import Image, ImageDraw
+
+        img = Image.open(image_path).convert("RGB")
+        if region is not None:
+            draw = ImageDraw.Draw(img)
+            draw.rectangle(region, outline=(255, 48, 48), width=max(2, img.width // 300))
+        self._base_image = img
+
+        win_w, win_h = self.INITIAL_SIZE
+        # Fit-to-window initial scale, same idea as the other preview dialogs,
+        # but never enlarged past 1:1 just to fill the window -- a small
+        # source image should open at its real size, not pre-blurred.
+        self._scale = min(win_w / img.width, win_h / img.height, 1.0)
+
+        self.canvas = tk.Canvas(self, width=win_w, height=win_h, background="#202020")
+        hbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+        vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(xscrollcommand=hbar.set, yscrollcommand=vbar.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        vbar.grid(row=0, column=1, sticky="ns")
+        hbar.grid(row=1, column=0, sticky="ew")
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self._image_id = self.canvas.create_image(0, 0, anchor="nw")
+        self._redraw()
+
+        ttk.Label(self, text="Scroll to zoom - drag the scrollbars to pan.",
+                  font=("TkDefaultFont", 8)).grid(row=2, column=0, columnspan=2,
+                                                  sticky="w", padx=4, pady=(2, 4))
+
+        # Windows/macOS deliver <MouseWheel> with event.delta; X11 (Linux)
+        # sends <Button-4>/<Button-5> instead -- bind all three so the wheel
+        # zooms regardless of platform.
+        self.canvas.bind("<MouseWheel>", self._on_wheel)
+        self.canvas.bind("<Button-4>", lambda e: self._zoom_at(e, self.WHEEL_STEP))
+        self.canvas.bind("<Button-5>", lambda e: self._zoom_at(e, 1 / self.WHEEL_STEP))
+
+    def _redraw(self):
+        from PIL import Image, ImageTk
+
+        w = max(1, int(self._base_image.width * self._scale))
+        h = max(1, int(self._base_image.height * self._scale))
+        resized = self._base_image.resize((w, h), Image.Resampling.LANCZOS)
+        self._photo = ImageTk.PhotoImage(resized)
+        self.canvas.itemconfig(self._image_id, image=self._photo)
+        self.canvas.configure(scrollregion=(0, 0, w, h))
+
+    def _on_wheel(self, event):
+        factor = self.WHEEL_STEP if event.delta > 0 else 1 / self.WHEEL_STEP
+        self._zoom_at(event, factor)
+
+    def _zoom_at(self, event, factor):
+        """Rescale the image, keeping the point under the cursor stationary."""
+        new_scale = max(self.MIN_SCALE, min(self.MAX_SCALE, self._scale * factor))
+        if new_scale == self._scale:
+            return
+
+        old_total_w = self._base_image.width * self._scale
+        old_total_h = self._base_image.height * self._scale
+        cursor_x = self.canvas.canvasx(event.x)
+        cursor_y = self.canvas.canvasy(event.y)
+        # Where the cursor points, as a fraction of the full image -- this is
+        # what must land back under the cursor after the resize.
+        rel_x = cursor_x / old_total_w if old_total_w else 0.0
+        rel_y = cursor_y / old_total_h if old_total_h else 0.0
+
+        self._scale = new_scale
+        self._redraw()
+
+        new_total_w = self._base_image.width * self._scale
+        new_total_h = self._base_image.height * self._scale
+        target_x = rel_x * new_total_w - event.x
+        target_y = rel_y * new_total_h - event.y
+        if new_total_w:
+            self.canvas.xview_moveto(max(0.0, target_x / new_total_w))
+        if new_total_h:
+            self.canvas.yview_moveto(max(0.0, target_y / new_total_h))
 
 
 class ScrollableThumbs(ttk.Frame):
@@ -232,9 +311,13 @@ class ReIDApp(ttk.Frame):
         self.extract_interval = tk.DoubleVar(value=saved.get("extract_interval", 1.0))
         self.timeline_samples = tk.IntVar(
             value=saved.get("timeline_samples", config.DEFAULT_TIMELINE_SAMPLE_TARGET))
-        # A user-supplied overlay format ("YYYY-MO-DD HH.MI.SS"), for cameras
-        # whose clock the built-in tolerant parser can't guess. Empty means
-        # "use the built-in parser only" -- see timestamp_ocr.compile_custom_pattern.
+        # Last-used overlay format ("YYYY-MO-DD HH.MI.SS"), for cameras whose
+        # clock the built-in tolerant parser can't guess -- see
+        # timestamp_ocr.compile_custom_pattern. No editing UI lives on this
+        # window; it's set and edited from TimelineReviewDialog's pattern
+        # picker (the only place that can test a pattern against real OCR
+        # text without a new scan) and just remembered here so a fresh scan
+        # on either point starts from whatever was last used.
         self.ocr_time_pattern = tk.StringVar(value=saved.get("ocr_time_pattern", ""))
         self.last_video_dir = tk.StringVar(value=saved.get("last_video_dir", ""))
         self.status = tk.StringVar(value="Select folders for point A and B, then Process.")
@@ -277,18 +360,6 @@ class ReIDApp(ttk.Frame):
             btn.config(command=lambda v=var, p=pt, b=btn: self._fix_times(v, p, b))
             btn.pack(side="left", padx=(4, 0))
 
-        # Custom overlay time pattern -- an escape hatch for cameras whose
-        # on-screen clock the built-in tolerant parser can't guess (e.g. dots
-        # where it expects colons, or an unusual field order). Empty means
-        # "use the built-in parser only". Shared by both points, since A and B
-        # are usually the same camera model/export pipeline.
-        prow = ttk.Frame(top)
-        prow.pack(fill="x", pady=2)
-        ttk.Label(prow, text="OCR time pattern", width=14).pack(side="left")
-        ttk.Entry(prow, textvariable=self.ocr_time_pattern).pack(
-            side="left", fill="x", expand=True, padx=4)
-        ttk.Button(prow, text="?", width=2, command=self._show_ocr_pattern_help).pack(side="left")
-
         # Detection model picker + manager
         mrow = ttk.Frame(top)
         mrow.pack(fill="x", pady=2)
@@ -315,8 +386,11 @@ class ReIDApp(ttk.Frame):
             drow, textvariable=self.device, state="readonly", values=["auto"], width=10)
         self._device_combo.pack(side="left", padx=4)
         self.device_status = tk.StringVar(value="probing...")
-        ttk.Label(drow, textvariable=self.device_status,
-                  font=("TkDefaultFont", 8)).pack(side="left", padx=(6, 0))
+        # wraplength so a long GPU name ("CUDA (NVIDIA GeForce RTX 4060
+        # Laptop GPU)") wraps onto a second line instead of running past the
+        # window's edge with no way to see the rest of it.
+        ttk.Label(drow, textvariable=self.device_status, font=("TkDefaultFont", 8),
+                  wraplength=420, justify="left").pack(side="left", padx=(6, 0), fill="x", expand=True)
         self._probe_devices()
 
         # Sliders / options
@@ -422,23 +496,6 @@ class ReIDApp(ttk.Frame):
         """Open a dialog to extract frames from a video into a point folder."""
         VideoExtractDialog(self, point, folder_var)
 
-    def _show_ocr_pattern_help(self):
-        messagebox.showinfo(
-            "OCR time pattern",
-            "Leave this blank to use the built-in parser, which already handles "
-            "most CCTV overlays (dashes, slashes or dots between date fields, "
-            "colons or dots between time fields, with or without AM/PM).\n\n"
-            "If your camera's clock still isn't read correctly, describe its "
-            "exact layout here using these tokens (any other character, "
-            "including spaces and punctuation, is matched literally):\n\n"
-            "  YYYY  4-digit year        DD  day\n"
-            "  YY    2-digit year        HH  hour (24-hour)\n"
-            "  MO    month               hh  hour (12-hour, needs AP)\n"
-            "  MI    minute              SS  second\n"
-            "  AP    AM/PM\n\n"
-            "Example: if your overlay shows \"2026-07-24 17.40.50\", the pattern "
-            "is:\n\n    YYYY-MO-DD HH.MI.SS", parent=self)
-
     def _fix_times(self, folder_var, point, button=None):
         """Read the true on-screen clock and fit a timeline for a point's folder.
 
@@ -476,7 +533,7 @@ class ReIDApp(ttk.Frame):
         # Compile the custom pattern (if any) up front and fail fast -- a typo
         # here shouldn't be discovered only after a full background scan.
         custom_pattern = None
-        pattern_text = self.ocr_time_pattern.get().strip()
+        pattern_text = timestamp_ocr.strip_pattern_label(self.ocr_time_pattern.get())
         if pattern_text:
             try:
                 custom_pattern = timestamp_ocr.compile_custom_pattern(pattern_text)
@@ -1213,6 +1270,65 @@ class ModelManagerDialog(tk.Toplevel):
         self.destroy()
 
 
+class PatternManagerDialog(tk.Toplevel):
+    """Review and delete user-saved OCR time patterns.
+
+    Built-in patterns (``config.BUILTIN_OCR_TIME_PATTERNS``) aren't shown
+    here -- they're fixed reference choices, not something to edit or
+    delete. Only the ones a user has explicitly named via "Save as..." in
+    the review dialog's pattern picker live in this list.
+    """
+
+    def __init__(self, parent, on_change=None):
+        super().__init__(parent)
+        self.title("Manage saved time patterns")
+        self.geometry("560x320")
+        self.on_change = on_change
+
+        self.tree = ttk.Treeview(self, columns=("name", "pattern"), show="headings")
+        self.tree.heading("name", text="Name")
+        self.tree.heading("pattern", text="Pattern")
+        self.tree.column("name", width=160, anchor="w")
+        self.tree.column("pattern", width=360, anchor="w")
+        vbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        hbar = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vbar.grid(row=0, column=1, sticky="ns")
+        hbar.grid(row=1, column=0, sticky="ew")
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        footer = ttk.Frame(self)
+        footer.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6, pady=6)
+        ttk.Button(footer, text="Delete", command=self._delete_selected).pack(side="left")
+        ttk.Button(footer, text="Close", command=self.destroy).pack(side="right")
+
+        self._refresh()
+        self.transient(parent)
+        self.grab_set()
+
+    def _refresh(self):
+        self.tree.delete(*self.tree.get_children())
+        for name, pattern in sorted(timestamp_ocr.load_saved_patterns().items()):
+            self.tree.insert("", "end", iid=name, values=(name, pattern))
+
+    def _delete_selected(self):
+        selection = self.tree.selection()
+        if not selection:
+            return
+        name = selection[0]
+        if not messagebox.askyesno("Delete pattern", f"Delete saved pattern \"{name}\"?",
+                                   parent=self):
+            return
+        saved = timestamp_ocr.load_saved_patterns()
+        saved.pop(name, None)
+        timestamp_ocr.save_patterns(saved)
+        self._refresh()
+        if self.on_change:
+            self.on_change()
+
+
 class RegionPickerDialog(tk.Toplevel):
     """Click-drag a rectangle around the clock on one frame.
 
@@ -1378,13 +1494,26 @@ class TimelineReviewDialog(tk.Toplevel):
                                      foreground="#b00000", wraplength=1140, justify="left")
         self._warn_label.pack(anchor="w", **pad)
 
+        # The one place a time pattern is picked, typed, saved or managed --
+        # this used to also live as a plain Entry on the main window, which
+        # just meant two places to look for the same setting. Editable (not
+        # readonly) so a freehand token template still works; picking one of
+        # the "pattern   (label)" entries snaps the box back to the bare,
+        # compilable pattern immediately (see _on_pattern_selected).
         prow = ttk.Frame(self)
         prow.pack(fill="x", **pad)
-        ttk.Label(prow, text="Custom time pattern:").pack(side="left")
-        ttk.Entry(prow, textvariable=self.pattern_text, width=36).pack(
-            side="left", fill="x", expand=True, padx=4)
-        ttk.Button(prow, text="Re-parse with this pattern",
-                   command=self._apply_custom_pattern).pack(side="left")
+        ttk.Label(prow, text="Time pattern:").pack(side="left")
+        self.pattern_combo = ttk.Combobox(prow, textvariable=self.pattern_text, width=30)
+        self.pattern_combo.pack(side="left", fill="x", expand=True, padx=4)
+        self.pattern_combo.bind("<<ComboboxSelected>>", self._on_pattern_selected)
+        self._refresh_pattern_choices()
+        ttk.Button(prow, text="Re-parse", command=self._apply_custom_pattern).pack(side="left")
+        ttk.Button(prow, text="Save as...", command=self._save_pattern_as).pack(
+            side="left", padx=(4, 0))
+        ttk.Button(prow, text="Manage...", command=self._manage_patterns).pack(
+            side="left", padx=(4, 0))
+        ttk.Button(prow, text="?", width=2, command=self._show_pattern_help).pack(
+            side="left", padx=(4, 0))
 
         clips_frame = ttk.Labelframe(self, text="Clips")
         clips_frame.pack(fill="x", **pad)
@@ -1428,11 +1557,22 @@ class TimelineReviewDialog(tk.Toplevel):
         self.samples_tree.tag_configure("edited", foreground="#0050b0")
         self.samples_tree.tag_configure("unread", foreground="#909090")
         self.samples_tree.bind("<<TreeviewSelect>>", self._on_select_sample)
-        sbar = ttk.Scrollbar(samples_frame, orient="vertical",
+        # grid rather than pack, so a horizontal scrollbar can sit under the
+        # tree: the columns' combined width (OCR text, filename/read clocks,
+        # ...) comfortably exceeds this pane's share of the dialog once the
+        # detail pane on the right claims its space, and a Treeview never
+        # wraps or reflows -- without this, the right-hand columns were
+        # simply unreachable rather than merely narrow.
+        vsbar = ttk.Scrollbar(samples_frame, orient="vertical",
                              command=self.samples_tree.yview)
-        self.samples_tree.configure(yscrollcommand=sbar.set)
-        self.samples_tree.pack(side="left", fill="both", expand=True)
-        sbar.pack(side="right", fill="y")
+        hsbar = ttk.Scrollbar(samples_frame, orient="horizontal",
+                             command=self.samples_tree.xview)
+        self.samples_tree.configure(yscrollcommand=vsbar.set, xscrollcommand=hsbar.set)
+        self.samples_tree.grid(row=0, column=0, sticky="nsew")
+        vsbar.grid(row=0, column=1, sticky="ns")
+        hsbar.grid(row=1, column=0, sticky="ew")
+        samples_frame.grid_rowconfigure(0, weight=1)
+        samples_frame.grid_columnconfigure(0, weight=1)
 
         detail = ttk.Labelframe(body, text="Selected frame")
         detail.pack(side="right", fill="y", padx=(8, 0))
@@ -1556,7 +1696,7 @@ class TimelineReviewDialog(tk.Toplevel):
         """
         from dataclasses import replace
 
-        text = self.pattern_text.get().strip()
+        text = timestamp_ocr.strip_pattern_label(self.pattern_text.get())
         pattern = None
         if text:
             try:
@@ -1577,10 +1717,65 @@ class TimelineReviewDialog(tk.Toplevel):
 
         # Remembered immediately (not only on Apply) so the *other* point's
         # first scan already benefits, without the user having to redo this.
+        self.pattern_text.set(text)
         if hasattr(self._app, "ocr_time_pattern"):
             self._app.ocr_time_pattern.set(text)
 
         self._refit()
+
+    def _on_pattern_selected(self, _event=None):
+        """Snap the box to the bare pattern right after picking a labeled entry.
+
+        The dropdown shows "pattern   (label)" so a choice is identifiable;
+        once picked, the box should hold just the compilable text, ready to
+        test or edit further -- not the annotation along with it.
+        """
+        self.pattern_text.set(timestamp_ocr.strip_pattern_label(self.pattern_text.get()))
+
+    def _refresh_pattern_choices(self):
+        self.pattern_combo.config(values=timestamp_ocr.pattern_choices())
+
+    def _save_pattern_as(self):
+        """Name and persist the box's current pattern for reuse later."""
+        text = timestamp_ocr.strip_pattern_label(self.pattern_text.get())
+        if not text:
+            messagebox.showinfo("Nothing to save", "Type or pick a pattern first.", parent=self)
+            return
+        try:
+            timestamp_ocr.compile_custom_pattern(text)
+        except ValueError as exc:
+            messagebox.showerror("Bad time pattern", str(exc), parent=self)
+            return
+
+        from tkinter import simpledialog
+        name = simpledialog.askstring("Save time pattern", "Name for this pattern:", parent=self)
+        if not name:
+            return
+        saved = timestamp_ocr.load_saved_patterns()
+        saved[name] = text
+        timestamp_ocr.save_patterns(saved)
+        self._refresh_pattern_choices()
+        self.pattern_text.set(text)
+
+    def _manage_patterns(self):
+        PatternManagerDialog(self, on_change=self._refresh_pattern_choices)
+
+    def _show_pattern_help(self):
+        messagebox.showinfo(
+            "Time pattern",
+            "Pick one of the ready-made patterns from the list, or describe your "
+            "camera's exact layout using these tokens (any other character, "
+            "including spaces and punctuation, is matched literally):\n\n"
+            "  YYYY  4-digit year        DD  day\n"
+            "  YY    2-digit year        HH  hour (24-hour)\n"
+            "  MO    month               hh  hour (12-hour, needs AP)\n"
+            "  MI    minute              SS  second\n"
+            "  AP    AM/PM\n\n"
+            "Example: if your overlay shows \"2026-07-24 17.40.50\", the pattern "
+            "is:\n\n    YYYY-MO-DD HH.MI.SS\n\n"
+            "Use \"Save as...\" to keep a pattern you've typed for next time; "
+            "\"Manage...\" lets you review or delete saved patterns. Leave the "
+            "box empty to use only the built-in parser.", parent=self)
 
     # --- detail pane -------------------------------------------------------
 
@@ -1638,19 +1833,22 @@ class TimelineReviewDialog(tk.Toplevel):
             self._zoom_btn.config(state="disabled")
 
     def _zoom_selected(self):
-        """Open the current sample's clock crop enlarged, in its own window.
+        """Open the current sample's full frame, scrollable and wheel-zoomable.
 
-        The inline preview is capped at 420 px wide to keep the dialog
-        compact; that's not always enough to read small overlay text with
-        confidence, which is the whole point of looking at a sample by hand.
+        Shows the whole frame (with the detected/marked region outlined)
+        rather than just the small crop the inline preview uses -- a clock
+        sitting near the frame's edge, or a region drawn a touch too tight,
+        would otherwise be invisible no matter how much the crop is enlarged.
         """
         if self._selected is None:
             return
         sample = self._samples[self._selected]
-        crop = self.scan.crops.get(sample.name)
-        if crop is None:
+        image_path = os.path.join(self.scan.folder, sample.name)
+        if not os.path.isfile(image_path):
+            messagebox.showerror("Frame not found", f"Could not find {image_path}", parent=self)
             return
-        _show_zoomed_crop(self, crop, f"{self.point}  {sample.name}")
+        FrameZoomDialog(self, image_path, f"{self.point}  {sample.name}",
+                        region=self.scan.region)
 
     # --- edits -------------------------------------------------------------
 
@@ -1745,7 +1943,7 @@ class TimelineReviewDialog(tk.Toplevel):
             # any new OCR -- see timestamp_ocr.load_scan_for_review.
             doc["region"] = list(self.scan.region) if self.scan.region else None
             doc["region_is_manual"] = self.scan.region_is_manual
-            doc["custom_pattern"] = self.pattern_text.get().strip()
+            doc["custom_pattern"] = timestamp_ocr.strip_pattern_label(self.pattern_text.get())
             timestamp_ocr.write_sidecar_doc(self.scan.folder, doc)
         except Exception as exc:
             log.warning("Could not write timestamps for %s", self.scan.folder, exc_info=True)
@@ -1854,7 +2052,7 @@ class TimelineReviewDialog(tk.Toplevel):
         """
         all_names = [k.name for k in self.scan.keys] + list(self.scan.unparsed)
         device = self._app.device.get()
-        pattern_text = self.pattern_text.get().strip()
+        pattern_text = timestamp_ocr.strip_pattern_label(self.pattern_text.get())
         try:
             custom_pattern = (timestamp_ocr.compile_custom_pattern(pattern_text)
                               if pattern_text else None)
@@ -1919,6 +2117,11 @@ def main():
     root = tk.Tk()
     root.title("Match-Vehicle-AI  |  Cross-Point Vehicle Re-ID")
     root.geometry("1100x760")
+    # Below this, the control rows (folder pickers, device/model status) no
+    # longer have room to lay out without their text running past the
+    # window's edge -- resizing smaller should shrink the galleries, not
+    # silently clip a status line with no way to see the rest of it.
+    root.minsize(900, 600)
     app = ReIDApp(root)
     app.status.set(f"Ready. Logging to {log_path}")
 

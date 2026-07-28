@@ -7,6 +7,7 @@ exercised with a fake ``reader`` object so these tests don't need the
 ``easyocr`` package installed.
 """
 
+import os
 from datetime import datetime
 
 import numpy as np
@@ -699,3 +700,127 @@ def test_load_scan_for_review_preserves_manual_edits(tmp_path):
     edited = next(s for s in result.samples if s.name == names[2])
     assert edited.edited is True
     assert edited.chosen == datetime(2026, 7, 23, 11, 0, 0)
+
+
+# --- built-in presets compile and parse -------------------------------------
+
+def test_all_builtin_patterns_compile():
+    import config
+    for label, pattern in config.BUILTIN_OCR_TIME_PATTERNS:
+        timestamp_ocr.compile_custom_pattern(pattern)  # must not raise
+
+
+def test_builtin_iso_dot_pattern_matches_the_reported_format():
+    import config
+    patterns = dict(config.BUILTIN_OCR_TIME_PATTERNS)
+    compiled = timestamp_ocr.compile_custom_pattern(patterns["ISO date, dot time"])
+    ts = timestamp_ocr.parse_overlay_text("2026-07-24 17.40.50", compiled)
+    assert ts == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_builtin_compact_pattern_parses_with_no_separators():
+    import config
+    patterns = dict(config.BUILTIN_OCR_TIME_PATTERNS)
+    compiled = timestamp_ocr.compile_custom_pattern(patterns["Compact, no separators"])
+    ts = timestamp_ocr.parse_overlay_text("20260724174050", compiled)
+    assert ts == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_builtin_12_hour_pattern_applies_pm():
+    import config
+    patterns = dict(config.BUILTIN_OCR_TIME_PATTERNS)
+    compiled = timestamp_ocr.compile_custom_pattern(patterns["Day/Month/Year, 12-hour clock"])
+    ts = timestamp_ocr.parse_overlay_text("24/07/2026 05:40:50 PM", compiled)
+    assert ts == datetime(2026, 7, 24, 17, 40, 50)
+
+
+# --- saved patterns persistence ----------------------------------------------
+
+def test_saved_patterns_round_trip(tmp_path):
+    path = str(tmp_path / "ocr_patterns.json")
+    timestamp_ocr.save_patterns({"My camera": "YYYY-MO-DD HH.MI.SS"}, path)
+    assert timestamp_ocr.load_saved_patterns(path) == {"My camera": "YYYY-MO-DD HH.MI.SS"}
+
+
+def test_saved_patterns_missing_file_returns_empty(tmp_path):
+    assert timestamp_ocr.load_saved_patterns(str(tmp_path / "nope.json")) == {}
+
+
+def test_saved_patterns_corrupt_file_returns_empty(tmp_path):
+    path = tmp_path / "ocr_patterns.json"
+    path.write_text("not json")
+    assert timestamp_ocr.load_saved_patterns(str(path)) == {}
+
+
+def test_saved_patterns_non_object_json_returns_empty(tmp_path):
+    path = tmp_path / "ocr_patterns.json"
+    path.write_text("[1, 2, 3]")
+    assert timestamp_ocr.load_saved_patterns(str(path)) == {}
+
+
+def test_saved_patterns_drops_non_string_values(tmp_path):
+    path = tmp_path / "ocr_patterns.json"
+    path.write_text('{"good": "YYYY-MO-DD HH:MI:SS", "bad": 123}')
+    assert timestamp_ocr.load_saved_patterns(str(path)) == {"good": "YYYY-MO-DD HH:MI:SS"}
+
+
+def test_save_patterns_failure_does_not_raise(tmp_path):
+    bad_path = str(tmp_path / "no_such_dir" / "ocr_patterns.json")
+    timestamp_ocr.save_patterns({"x": "YYYY-MO-DD HH:MI:SS"}, bad_path)  # must not raise
+    assert not os.path.exists(bad_path)
+
+
+def test_default_patterns_path_is_next_to_config():
+    import config
+    path = timestamp_ocr.default_patterns_path()
+    assert os.path.basename(path) == "ocr_patterns.json"
+    assert os.path.dirname(path) == os.path.dirname(os.path.abspath(config.__file__))
+
+
+# --- pattern label stripping / choice listing -------------------------------
+
+def test_strip_pattern_label_removes_annotation():
+    assert timestamp_ocr.strip_pattern_label(
+        "YYYY-MO-DD HH:MI:SS   (ISO date, colon time)") == "YYYY-MO-DD HH:MI:SS"
+
+
+def test_strip_pattern_label_leaves_bare_pattern_unchanged():
+    assert timestamp_ocr.strip_pattern_label("YYYY-MO-DD HH.MI.SS") == "YYYY-MO-DD HH.MI.SS"
+
+
+def test_strip_pattern_label_leaves_a_lone_trailing_paren_alone():
+    # No "   (" separator -- not our annotation format, don't mangle it.
+    assert timestamp_ocr.strip_pattern_label("weird)") == "weird)"
+
+
+def test_strip_pattern_label_strips_surrounding_whitespace():
+    assert timestamp_ocr.strip_pattern_label("  YYYY-MO-DD HH:MI:SS  ") == "YYYY-MO-DD HH:MI:SS"
+
+
+def test_pattern_choices_includes_builtins(tmp_path, monkeypatch):
+    monkeypatch.setattr(timestamp_ocr, "default_patterns_path", lambda: str(tmp_path / "p.json"))
+    import config
+    choices = timestamp_ocr.pattern_choices()
+    assert len(choices) == len(config.BUILTIN_OCR_TIME_PATTERNS)
+    for label, pattern in config.BUILTIN_OCR_TIME_PATTERNS:
+        assert f"{pattern}   ({label})" in choices
+
+
+def test_pattern_choices_includes_saved_after_builtins(tmp_path, monkeypatch):
+    path = str(tmp_path / "p.json")
+    monkeypatch.setattr(timestamp_ocr, "default_patterns_path", lambda: path)
+    import config
+    timestamp_ocr.save_patterns({"My camera": "YYYY-MO-DD HH.MI.SS"}, path)
+    choices = timestamp_ocr.pattern_choices()
+    assert choices[-1] == "YYYY-MO-DD HH.MI.SS   (My camera)"
+    assert len(choices) == len(config.BUILTIN_OCR_TIME_PATTERNS) + 1
+
+
+def test_pattern_choices_round_trip_through_strip(tmp_path, monkeypatch):
+    path = str(tmp_path / "p.json")
+    monkeypatch.setattr(timestamp_ocr, "default_patterns_path", lambda: path)
+    timestamp_ocr.save_patterns({"My camera": "YYYY-MO-DD HH.MI.SS"}, path)
+    choice = timestamp_ocr.pattern_choices()[-1]
+    bare = timestamp_ocr.strip_pattern_label(choice)
+    timestamp_ocr.compile_custom_pattern(bare)  # must not raise
+    assert bare == "YYYY-MO-DD HH.MI.SS"
