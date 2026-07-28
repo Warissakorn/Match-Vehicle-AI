@@ -184,3 +184,48 @@ def test_cluster_same_point_scales_to_real_world_gallery_size():
 
     assert len(clusters) == n
     assert elapsed < 5.0, f"cluster_same_point took {elapsed:.2f}s for n={n} (expected < 5s)"
+
+
+# --- time_gate_mask: vectorized must match the reference loop ----------------
+
+def _reference_gate(times_a, times_b, lo, hi):
+    """The original Python double loop, kept as the oracle."""
+    mask = np.zeros((len(times_a), len(times_b)), dtype=bool)
+    for i, ta in enumerate(times_a):
+        for j, tb in enumerate(times_b):
+            mask[i, j] = lo <= (tb - ta).total_seconds() <= hi
+    return mask
+
+
+def test_time_gate_matches_reference_loop():
+    base = datetime(2026, 7, 23, 10, 0, 0)
+    times_a = [base + timedelta(seconds=i * 7) for i in range(40)]
+    times_b = [base + timedelta(seconds=i * 3) for i in range(120)]
+    for lo, hi in ((0.0, 600.0), (30.0, 90.0), (-120.0, 120.0), (0.0, 0.0)):
+        assert np.array_equal(matcher.time_gate_mask(times_a, times_b, lo, hi),
+                              _reference_gate(times_a, times_b, lo, hi))
+
+
+def test_time_gate_matches_reference_across_a_long_session():
+    # Offsets stay well inside float32's precise range even over many hours,
+    # which is why the mask is computed relative to the first A timestamp.
+    base = datetime(2026, 7, 23, 0, 0, 0)
+    times_a = [base + timedelta(seconds=i * 601) for i in range(60)]   # ~10 h
+    times_b = [base + timedelta(seconds=i * 599) for i in range(60)]
+    assert np.array_equal(matcher.time_gate_mask(times_a, times_b, 0.0, 600.0),
+                          _reference_gate(times_a, times_b, 0.0, 600.0))
+
+
+def test_time_gate_boundaries_are_inclusive():
+    base = datetime(2026, 7, 23, 10, 0, 0)
+    times_a = [base]
+    times_b = [base + timedelta(seconds=s) for s in (9, 10, 60, 61)]
+    mask = matcher.time_gate_mask(times_a, times_b, 10.0, 60.0)
+    assert list(mask[0]) == [False, True, True, False]
+
+
+def test_time_gate_empty_inputs_keep_their_shape():
+    base = datetime(2026, 7, 23, 10, 0, 0)
+    assert matcher.time_gate_mask([], [base], 0.0, 60.0).shape == (0, 1)
+    assert matcher.time_gate_mask([base], [], 0.0, 60.0).shape == (1, 0)
+    assert matcher.time_gate_mask([], [], 0.0, 60.0).shape == (0, 0)

@@ -38,12 +38,20 @@ timestamp** the thing the gate lives or dies on; see "Fixing inaccurate
 timestamps (OCR)" below if a video's declared fps/start-time drifts from the
 footage's real clock.
 
-`matcher.py` also groups **repeat sightings of the same vehicle within one
+`matcher.py` can also group **repeat sightings of the same vehicle within one
 point** (e.g. a car circling back past the same camera) via
 `cluster_same_point` — appearance-only, no time gate, since all detections are
 already known to be at that point. Every detection still appears in the
 GUI/CLI output; repeats are just tagged so they read as one vehicle instead of
 several.
+
+**This is off by default.** It compares every vehicle at a point against every
+other, which at a real gallery size (12,000 vehicles) is a ~590 GFLOP pass
+peaking over 1 GB — per point, and its result isn't cached, so on a warm cache
+it becomes the single dominant cost of a run while feeding nothing but a
+caption tag. Nothing else depends on it: matching, the travel-time gate and
+the training export are all independent. Turn it on with the **Group repeat
+sightings** checkbox in the GUI or `--cluster-same-point` on the CLI.
 
 ## Quick start (one-click launcher)
 
@@ -117,21 +125,105 @@ directly on timestamps, a wrong clock means wrong or missing matches. If your
 footage burns the true capture time into the frame as on-screen text (common
 on CCTV), OCR-ing it fixes this without re-extracting anything.
 
-**GUI:** click **Fix times (OCR)...** next to a point's folder (after
-extracting or on an existing folder of stills). It locates the on-screen
-timestamp once from a sample frame, reads every frame's clock, and writes the
-result as a `.timestamps.json` sidecar in that folder — a one-time cost per
-folder, not a per-run one. Click **Process** again afterwards to pick up the
-corrected times; each thumbnail's second caption line shows `[ocr]` when a
-frame's time came from this sidecar (vs. `[filename]`/`[exif]`/`[mtime]`).
+### How it works: sample, then fit
 
-**CLI:** `--ocr-time` on `cli.py` or `extract_video.py` runs the same OCR pass
-before processing / right after extraction.
+Reading the clock on every frame is both slow and fragile — a 12,000-frame
+folder takes tens of minutes, and each reading is accepted on its own, so a
+single misread digit is committed silently. Worse, frames the OCR *fails* on
+keep their filename time, so one folder ends up carrying two different clocks.
 
-Timestamp priority is: **OCR sidecar → filename → EXIF → file mtime** — the
+Extracted frames carry their source frame index in the filename and are
+sampled at a fixed interval, so the clock is a straight line in that index:
+
+```
+true_time = clip_start + frame_index / fps
+```
+
+That's two unknowns per clip. So instead of reading 12,000 frames, the app
+reads about **40**, then fits the line through them with a robust estimator
+(Theil–Sen plus one outlier-rejection pass). Roughly **300× less OCR**, and
+*more* accurate — a misread lands far off the line and is discarded, and
+frames whose clock couldn't be read at all still get a correct time from the
+fit, which is what removes the two-clocks problem.
+
+### Reviewing the result
+
+**GUI:** click **Fix times...** next to a point's folder. When the scan
+finishes, a review window shows what was found:
+
+- the fitted **rate** (as fps) and each clip's **start time**
+- how many sampled readings **agree** with the line, the typical error and the
+  worst one
+- warnings when something looks wrong (implausible frame rate, readings that
+  don't line up, a worst-case error suggesting gaps or a variable frame rate)
+- the sampled frames, each with the **clock crop**, the raw OCR text, and —
+  importantly — the **filename clock beside the read clock**
+
+That last column is the point of the review. A robust fit defends against
+*independent* misreads, but it cannot detect a *systematic* one: if the
+overlay font makes every `8` read as `6`, the readings stay mutually
+consistent and the residuals look perfect. The gap between the two clocks is
+what a human can actually judge ("everything is exactly 3 h 12 m off" is a
+timezone bug, not a fit problem).
+
+Pick any sampled frame to see the alternative readings the OCR considered
+(with confidence), choose a different one, or type the correct time. The fit
+re-runs instantly on every edit, so you can watch the errors settle. There's
+also a **± seconds** nudge per clip or across all clips, and **Read every
+frame instead** as a fallback to the slow exhaustive pass for footage a
+straight line genuinely can't describe.
+
+**Zoom in...** opens the selected frame's full image (not just the small
+crop shown inline) in its own window, with the detected/marked clock region
+outlined — scroll the mouse wheel to zoom in and out around the cursor, and
+use the scrollbars to pan; useful when the clock sits near an edge the
+default crop preview doesn't show enough of.
+
+If the overlay's clock uses a layout the built-in parser can't guess (a
+different field order, an unusual separator), the **time pattern** picker —
+the only place this is edited, so there's one place to look — offers a
+dropdown of ready-made layouts (ISO with colon or dot time, day/month/year
+with a 12-hour clock, compact with no separators, ...) plus any you've saved
+yourself. Typing your own uses the same small token vocabulary (`YYYY`, `MO`,
+`DD`, `HH`/`hh`, `MI`, `SS`, `AP`; anything else is matched literally) — e.g.
+`YYYY-MO-DD HH.MI.SS` for `2026-07-24 17.40.50`; click **?** for the full
+list. **Re-parse** applies the current pattern to the OCR text already
+collected — no new OCR call. **Save as...** names and keeps a pattern for
+reuse (stored in `ocr_patterns.json`, git-ignored); **Manage...** reviews or
+deletes saved ones. The last pattern used is remembered automatically for
+the next scan on either point.
+
+If automatic detection locks onto the wrong text entirely (a camera-model
+watermark, a plate — visible as the same confident-looking non-time reading
+on every sampled frame), **Mark clock position...** lets you draw a box
+around the clock by hand on one frame; **Re-sample clock** re-reads the
+samples with that fixed region, which is also faster than the automatic
+probe. Both the region and every correction are saved, so clicking **Fix
+times...** again on the same folder reopens this exact review — corrections,
+custom pattern, marked region and all — with **no OCR call at all**, rather
+than reading the clock from scratch every time.
+
+Click **Process** again afterwards to pick up the corrected times. Each
+thumbnail's second caption line shows `[timeline]` when a frame's time came
+from a fit (or `[ocr]` from the older every-frame pass, vs.
+`[filename]`/`[exif]`/`[mtime]`).
+
+**CLI:** `--ocr-time` on `cli.py` or `extract_video.py` does the same fit
+headlessly. Since nobody is there to eyeball a suspicious result, it *refuses*
+to write when the sanity checks fail — `--force` overrides. `--ocr-samples N`
+changes how many frames are sampled, and `--ocr-every-frame` selects the old
+exhaustive path.
+
+Timestamp priority is: **sidecar → filename → EXIF → file mtime** — the
 sidecar wins whenever present, since it reflects the footage's real clock
 rather than an assumption about it. Uses [EasyOCR](https://github.com/JaidedAI/EasyOCR); install it via `requirements.txt` (a one-time model
 download on first use).
+
+> Accuracy is bounded by the **time span** the samples cover, not by how many
+> you take: the clock only displays whole seconds, and that 1 s quantum
+> divides by the span. Samples spread across a three-hour clip pin the rate far
+> better than the same number bunched into a few minutes — which is why they're
+> spread evenly, endpoints included.
 
 ## Usage
 
@@ -141,25 +233,55 @@ download on first use).
 python app/gui.py          # or just ./run.sh
 ```
 
-1. Browse to the **Point A** and **Point B** frame folders — or click
-   **From video...** to extract frames from a video first, and optionally
-   **Fix times (OCR)...** if the footage has an on-screen clock (see above).
-2. Pick a **Detection model** from the dropdown (or click **Manage models...**
-   to download / update weights). Pick a **Device** (Auto / CPU / CUDA —
-   Auto uses a GPU when one's available). Tune sliders if needed (similarity
-   threshold, detection confidence, travel window).
-3. Click **Process**. First run downloads the models. The right panel starts by
-   showing every vehicle detected at point B — useful for browsing before
-   you've picked anything from A ("Show all B" returns to this view any time).
-   Galleries cap at `config.DEFAULT_MAX_GALLERY_THUMBNAILS` (300 by default,
-   earliest by time) since real footage can produce thousands of vehicles per
-   point and rendering a thumbnail for every one would freeze the window; the
-   status bar says so when a gallery is truncated. Matching against an A
-   vehicle is unaffected — it isn't limited to what's currently rendered.
-4. Click a vehicle in the A gallery → its best B-matches appear on the right
-   instead, with similarity scores. Click **✓ Same** / **✗ Diff** on a candidate
-   to label it as training data (saved under `training_data/`, see below).
-   Double-click any thumbnail to view the full frame with the bounding box.
+The window is laid out as the three steps the workflow actually has, in order.
+Each step folds away with the triangle in its header (or by clicking the header
+itself), and the fold state is remembered between runs — once the folders and
+clocks are settled, folding steps 1 and 2 hands the whole height back to the
+galleries, which is where the actual comparing happens. **A draggable divider**
+separates the settings from the results: drag it to give either half as much
+height as you want, and its position is remembered too. The settings half
+scrolls, so wherever the divider sits nothing is out of reach.
+
+**Step 1 — Frames.** Browse to the **Point A** and **Point B** frame folders, or
+click **From video...** to extract frames from a video first.
+
+**Step 2 — Timestamps and model.** Each point shows a one-line summary of where
+its times currently come from — `no timestamp review yet - times come from
+filenames`, or e.g. `12557 frame time(s) confirmed from a fitted clock, 29.97
+fps`. Green means reviewed and confirmed, amber means fitted but not confirmed
+(or the fit raised warnings), grey means nothing has been done yet. Click
+**Fix times...** to open the review (see above) if the footage has an on-screen
+clock. This line matters because matching is gated on travel time: with wrong
+clocks, Process runs to completion and quietly finds nothing. Also here: the
+**Detection model** dropdown (**Manage models...** downloads / updates weights)
+and the **Device** picker (Auto / CPU / CUDA — Auto uses a GPU when one is
+available).
+
+**Step 3 — Match.** Tune the similarity threshold and travel window, then click
+**Process**. First run downloads the models. Everything in this step except
+**Detect conf** re-filters an existing run instantly; detection confidence
+changes what gets detected at all, so it needs another Process.
+
+After a run, the right panel starts by showing every vehicle detected at point B
+— useful for browsing before you've picked anything from A ("Show all B" returns
+to this view any time). Galleries cap at `config.DEFAULT_MAX_GALLERY_THUMBNAILS`
+(300 by default, earliest by time) since real footage can produce thousands of
+vehicles per point and rendering a thumbnail for every one would freeze the
+window; each gallery's own header says so when it is truncated. Matching against
+an A vehicle is unaffected — it isn't limited to what's currently rendered.
+
+Click a vehicle in the A gallery → its best B-matches appear on the right, with
+similarity scores. Click **✓ Same** / **✗ Diff** on a candidate to label it as
+training data (saved under `training_data/`, see below). Double-click any
+thumbnail to open the full frame in the same scrollable, mouse-wheel-zoomable
+viewer the timestamp review uses, with the vehicle's box outlined — enough to
+read a plate rather than just confirm a shape. Both galleries scroll with the
+mouse wheel.
+
+The **Fix times...** review window has the same treatment: its Apply / Cancel /
+"Read every frame instead" footer is pinned to the bottom edge and everything
+above it scrolls, so on a screen too short for the full dialog the two decisions
+it exists to collect are still reachable instead of being clipped off-screen.
 
 Every thumbnail shows a second, smaller caption line with its source frame's
 filename and where its timestamp came from (`[ocr]`/`[filename]`/`[exif]`/
@@ -170,7 +292,39 @@ Vehicles seen more than once at the *same* point (e.g. a car circling back past
 the same camera) are tagged `•GrpN(xK)` in their caption — every detection is
 still shown, the tag just flags that they're believed to be one vehicle.
 
-Slider and toggle changes re-match instantly (no re-detection needed).
+Slider and toggle changes re-match instantly (no re-detection needed). Dragging
+a slider coalesces into a single refresh once the pointer settles, so a drag
+across the track costs one gallery rebuild rather than one per pixel of travel.
+
+### Appearance
+
+The window's look follows `app/theme.py`, which ports the design system in
+`genesisDESIGN_1.md` onto ttk: its palette, type scale, 4px spacing grid, 1px
+borders, and the rule that only one filled indigo button (**Process**) appears
+per view. What could not be ported is documented at the top of that file —
+rounded corners, shadows and backdrop blur have no Tk equivalent, and the
+document's web fonts (General Sans / DM Sans / JetBrains Mono) are used when
+installed and substituted with the closest system faces otherwise.
+
+**Light and dark.** The button at the bottom right of the status bar switches
+schemes; it is labelled with the mode it will switch *to*. The choice is
+remembered in `settings.json`. Dark is a designed palette rather than an
+inversion — text is `#F5F5F7` rather than pure white, the darkest surface is
+`#0A0A0B` rather than pure black (the design document forbids pure values for
+text), and the indigo moves up its ramp to `#818CF8` because the light-mode
+value reads as near-black against a dark surface. Both schemes are checked
+against WCAG AA contrast ratios; the semantic colours have separate darker
+variants (`SUCCESS_TEXT`, `WARNING_TEXT`, `ERROR_TEXT`) for use as coloured
+text, because the document's own values are specified for status chips and
+measure only 2.2–2.5:1 as text on white.
+
+`ttk.Labelframe` is used nowhere in the app: it draws its caption straddling
+the top border and `clam` leaves no gap behind it, so the 1px rule ran straight
+through the text. `theme.panel()` puts the caption above the border instead.
+For the same reason `Card.TFrame` (bordered) and `Surface.TFrame` (the same
+fill, no border) are separate styles: a bordered style reused for the rows and
+fillers *inside* a card makes each of them draw its own rectangle, which in one
+case rendered as a rule running through a section title.
 
 The bottom bar shows CPU/RAM/GPU usage alongside the status text (each field
 reads "n/a" if its dependency or a GPU isn't present) — useful for telling
@@ -231,14 +385,27 @@ That build's `torch.cuda.is_available()` is always `False`, so `cuda` won't
 appear in the Device dropdown / `--device` choices — this looks identical to
 "no GPU" from the app's side, but is actually just the wrong wheel installed.
 
-**`run.sh`/`run.bat` handle this automatically:** on a first run (or whenever
-`requirements.txt` changes), the launcher checks for `nvidia-smi`; if found, it
-installs a CUDA build of `torch`/`torchvision` *before* the regular
-`requirements.txt` install, so the plain install sees a compatible version
-already there and leaves it alone. This is best-effort (falls back to the CPU
-build if the CUDA install fails) and only runs during that install step, not
-on every launch — delete `.venv/.requirements.sha256` (or the whole `.venv`)
-to force it to re-check, e.g. after installing a GPU driver.
+**`run.sh`/`run.bat` handle this automatically** by running
+`tools/install_torch.py` during dependency installation. That helper:
+
+1. reads the installed NVIDIA driver version from `nvidia-smi`;
+2. picks the **CUDA build that driver actually supports** (`cu124`, `cu121` or
+   `cu118`) and installs it *before* the regular `requirements.txt` install, so
+   the plain install sees a compatible `torch` already there and leaves it alone;
+3. verifies the result and prints one line telling you whether the GPU will
+   really be used — e.g. `GPU ready: NVIDIA GeForce RTX 3060 (CUDA 12.1)`.
+
+Matching the wheel to the driver matters: a build newer than the driver
+installs *successfully* but still reports `torch.cuda.is_available() == False`,
+which looks exactly like having no GPU. If your driver is older than every CUDA
+build above, the helper says so and stays on CPU rather than installing
+something that can't initialize — update the driver to enable GPU support.
+
+The whole step is best-effort (any failure falls back to the CPU build) and
+only runs when dependencies are installed, not on every launch. **Delete
+`.venv` (or just `.venv/.requirements.sha256`) and re-run the launcher to force
+a re-check** — e.g. after installing or updating a GPU driver, or after
+upgrading from a version of this project that didn't have the check.
 
 If you installed manually (`pip install -r requirements.txt` yourself) or the
 automatic install still isn't picking up your GPU, the app tells you which
@@ -340,7 +507,18 @@ via `pytest.importorskip` when it isn't installed, matching CI's minimal
 All tunables live in `config.py`: vehicle classes, default detection model,
 detection confidence, timestamp patterns, similarity threshold, travel-time
 window, embedder batch size / half precision, resource-bar poll interval, and
-the settings file location. The selectable detection models are catalogued in
+the settings file location.
+
+Timeline-fit tunables sit there too — how many frames to sample
+(`DEFAULT_TIMELINE_SAMPLE_TARGET`, and the per-clip floor), the outlier
+tolerance, and the thresholds behind each review warning. One of them is
+load-bearing rather than cosmetic: `TIMELINE_INLIER_FLOOR_SECONDS`. The
+overlay clock shows whole seconds, so on clean footage the readings agree
+*exactly* and the measured spread is zero; without a floor under the outlier
+tolerance, the band collapses to zero width and every sample gets rejected.
+Same-point clustering is switched by `DEFAULT_ENABLE_SAME_POINT_CLUSTERING`.
+
+The selectable detection models are catalogued in
 `src/mash_reid/model_registry.py` and downloaded/updated via
 `src/mash_reid/model_manager.py` — add a `ModelInfo` entry to offer another one.
 

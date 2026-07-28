@@ -62,6 +62,17 @@ DEFAULT_TOP_K = 5
 # angle/lighting, so genuine repeats look more alike than cross-point matches.
 DEFAULT_SAME_POINT_SIMILARITY_THRESHOLD = 0.8
 
+# Whether to group repeat sightings within a point at all. Off by default:
+# clustering builds a full N x N self-similarity matrix per point, which for a
+# real gallery (N ~ 12,000, dim 2048) is ~590 GFLOP and peaks over 1 GB per
+# call -- and its result is not cached, so on a warm .reidcache it becomes the
+# single dominant cost of a run. Nothing downstream depends on it: matching,
+# the time gate, and the training export are all independent, and the only
+# consumer is a "*GrpN(xK)" suffix on gallery captions. Turn it back on with
+# the GUI checkbox or the CLI's --cluster-same-point when the grouping is
+# actually wanted.
+DEFAULT_ENABLE_SAME_POINT_CLUSTERING = False
+
 # Folder for confirm/reject-labeled training pairs exported from the GUI.
 DEFAULT_TRAINING_DATA_DIR = "training_data"
 
@@ -84,6 +95,44 @@ TIMESTAMP_SIDECAR_NAME = ".timestamps.json"
 # Languages passed to easyocr.Reader -- overlays here are just digits and
 # separators, so English is sufficient (and keeps the model download small).
 OCR_LANGUAGES: tuple[str, ...] = ("en",)
+
+# Padding (x, y) added around the detected overlay bounding box before
+# cropping, so a slightly tighter per-frame box still contains the whole text.
+OCR_REGION_PAD: tuple[int, int] = (10, 6)
+
+
+# --- Timeline fit -------------------------------------------------------------
+#
+# A CCTV clock advances linearly with the source frame index, so instead of
+# OCR-ing every frame we OCR a sample and fit a line through it. See
+# ``mash_reid.timeline``.
+
+# How many frames to sample per folder, and the floor per clip. The target is
+# a floor rather than a cap: with a dozen clips, 40 samples spread evenly
+# would leave 3 per clip, too few to place a clip's start time reliably.
+DEFAULT_TIMELINE_SAMPLE_TARGET = 40
+DEFAULT_TIMELINE_MIN_SAMPLES_PER_CLIP = 8
+
+# Robust-fit tuning. A reading is an outlier when its residual exceeds
+# ``SIGMA * 1.4826 * MAD`` -- but the overlay clock only shows whole seconds,
+# so on clean footage the MAD can be exactly 0, which would make the tolerance
+# 0 and reject every frame that isn't bit-exact. The floor (just over the 1 s
+# display quantum) is what keeps that from happening.
+TIMELINE_INLIER_SIGMA = 3.0
+TIMELINE_INLIER_FLOOR_SECONDS = 1.5
+
+# The overlay shows whole seconds (truncated), so readings sit on average half
+# a second behind the true time; added back when the fit is applied.
+TIMELINE_CLOCK_QUANTUM_SECONDS = 1.0
+
+# Thresholds that turn into human-readable warnings in the review dialog. None
+# of these block anything -- the user decides -- except a non-positive slope,
+# which means time runs backwards and can only be a broken fit.
+TIMELINE_MIN_INLIER_FRACTION = 0.6
+TIMELINE_WARN_RESIDUAL_MAD_SECONDS = 2.0
+TIMELINE_WARN_MAX_RESIDUAL_SECONDS = 10.0
+TIMELINE_PLAUSIBLE_FPS_RANGE: tuple[float, float] = (1.0, 240.0)
+TIMELINE_MIN_SAMPLES_FOR_CONFIDENT_CLIP = 3
 
 
 # --- GPU / device ------------------------------------------------------------
@@ -110,6 +159,25 @@ RESOURCE_POLL_MS = 1000
 # Where the GUI remembers folder paths, sliders, and other choices between
 # runs. Lives at the project root, next to config.py, and is git-ignored.
 DEFAULT_SETTINGS_FILE = "settings.json"
+
+# Where user-saved custom OCR time patterns are kept (see
+# mash_reid.timestamp_ocr.load_saved_patterns/save_patterns), separate from
+# settings.json since it's a small named collection rather than a single
+# flat value per key.
+DEFAULT_OCR_PATTERNS_FILE = "ocr_patterns.json"
+
+# Ready-made (label, pattern) choices covering the overlay layouts reported
+# in practice, offered in the timestamp review dialog's pattern picker so
+# most users never need to write a token template themselves -- see
+# mash_reid.timestamp_ocr.compile_custom_pattern for the token vocabulary.
+BUILTIN_OCR_TIME_PATTERNS: list[tuple[str, str]] = [
+    ("ISO date, colon time", "YYYY-MO-DD HH:MI:SS"),
+    ("ISO date, dot time", "YYYY-MO-DD HH.MI.SS"),
+    ("Day/Month/Year, colon time", "DD/MO/YYYY HH:MI:SS"),
+    ("Day/Month/Year, 12-hour clock", "DD/MO/YYYY hh:MI:SS AP"),
+    ("Month/Day/Year, colon time", "MO/DD/YYYY HH:MI:SS"),
+    ("Compact, no separators", "YYYYMODDHHMISS"),
+]
 
 
 @dataclass

@@ -35,6 +35,14 @@ _SCHEMA: dict[str, type] = {
     "one_to_one": bool,
     "extract_interval": float,
     "last_video_dir": str,
+    "cluster_same_point": bool,
+    "timeline_samples": int,
+    "ocr_time_pattern": str,
+    "ui_theme": str,
+    "step1_open": bool,
+    "step2_open": bool,
+    "step3_open": bool,
+    "split_sash": int,
 }
 
 
@@ -74,6 +82,11 @@ def load(path: str | None = None) -> dict:
         # as a bool-typed setting, or a real bool passing as a float one.
         if expected_type is bool:
             if not isinstance(value, bool):
+                continue
+        elif expected_type is int:
+            # Same bool-is-an-int trap as below, in the other direction: a
+            # stray `true` must not be accepted as an int-typed setting.
+            if isinstance(value, bool) or not isinstance(value, int):
                 continue
         elif expected_type is float:
             if isinstance(value, bool):
