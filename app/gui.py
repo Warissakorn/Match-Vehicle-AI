@@ -92,6 +92,33 @@ def _show_full_frame(parent, record: VehicleRecord):
     label.pack()
 
 
+def _show_zoomed_crop(parent, crop, title: str, min_width: int = 900, max_width: int = 1400):
+    """Popup showing a small crop (e.g. a clock region) enlarged and readable.
+
+    The review dialog's detail pane caps its crop at ~420 px so several rows
+    of context fit on screen at once; that's too small to make out a clock's
+    digits with confidence, which is exactly the judgment call the dialog
+    exists to support. Upscales with LANCZOS (smoother than nearest-neighbor
+    for reading text, unlike pixel-art) to a comfortable minimum width, but
+    never past what would push the window off a typical screen.
+    """
+    from PIL import Image, ImageTk
+
+    img = Image.fromarray(crop[:, :, ::-1])  # cv2 gives BGR, PIL wants RGB
+    scale = min_width / img.width
+    scale = min(scale, max_width / img.width)  # never exceed max_width either
+    if scale > 1.0:
+        img = img.resize((int(img.width * scale), int(img.height * scale)),
+                         Image.Resampling.LANCZOS)
+
+    top = tk.Toplevel(parent)
+    top.title(title)
+    photo = ImageTk.PhotoImage(img)
+    label = tk.Label(top, image=photo)
+    label.image = photo  # keep a reference
+    label.pack()
+
+
 class ScrollableThumbs(ttk.Frame):
     """A vertically scrolling frame that lays out thumbnail widgets in a grid."""
 
@@ -205,6 +232,10 @@ class ReIDApp(ttk.Frame):
         self.extract_interval = tk.DoubleVar(value=saved.get("extract_interval", 1.0))
         self.timeline_samples = tk.IntVar(
             value=saved.get("timeline_samples", config.DEFAULT_TIMELINE_SAMPLE_TARGET))
+        # A user-supplied overlay format ("YYYY-MO-DD HH.MI.SS"), for cameras
+        # whose clock the built-in tolerant parser can't guess. Empty means
+        # "use the built-in parser only" -- see timestamp_ocr.compile_custom_pattern.
+        self.ocr_time_pattern = tk.StringVar(value=saved.get("ocr_time_pattern", ""))
         self.last_video_dir = tk.StringVar(value=saved.get("last_video_dir", ""))
         self.status = tk.StringVar(value="Select folders for point A and B, then Process.")
 
@@ -245,6 +276,18 @@ class ReIDApp(ttk.Frame):
             btn = ttk.Button(row, text="Fix times...")
             btn.config(command=lambda v=var, p=pt, b=btn: self._fix_times(v, p, b))
             btn.pack(side="left", padx=(4, 0))
+
+        # Custom overlay time pattern -- an escape hatch for cameras whose
+        # on-screen clock the built-in tolerant parser can't guess (e.g. dots
+        # where it expects colons, or an unusual field order). Empty means
+        # "use the built-in parser only". Shared by both points, since A and B
+        # are usually the same camera model/export pipeline.
+        prow = ttk.Frame(top)
+        prow.pack(fill="x", pady=2)
+        ttk.Label(prow, text="OCR time pattern", width=14).pack(side="left")
+        ttk.Entry(prow, textvariable=self.ocr_time_pattern).pack(
+            side="left", fill="x", expand=True, padx=4)
+        ttk.Button(prow, text="?", width=2, command=self._show_ocr_pattern_help).pack(side="left")
 
         # Detection model picker + manager
         mrow = ttk.Frame(top)
@@ -379,6 +422,23 @@ class ReIDApp(ttk.Frame):
         """Open a dialog to extract frames from a video into a point folder."""
         VideoExtractDialog(self, point, folder_var)
 
+    def _show_ocr_pattern_help(self):
+        messagebox.showinfo(
+            "OCR time pattern",
+            "Leave this blank to use the built-in parser, which already handles "
+            "most CCTV overlays (dashes, slashes or dots between date fields, "
+            "colons or dots between time fields, with or without AM/PM).\n\n"
+            "If your camera's clock still isn't read correctly, describe its "
+            "exact layout here using these tokens (any other character, "
+            "including spaces and punctuation, is matched literally):\n\n"
+            "  YYYY  4-digit year        DD  day\n"
+            "  YY    2-digit year        HH  hour (24-hour)\n"
+            "  MO    month               hh  hour (12-hour, needs AP)\n"
+            "  MI    minute              SS  second\n"
+            "  AP    AM/PM\n\n"
+            "Example: if your overlay shows \"2026-07-24 17.40.50\", the pattern "
+            "is:\n\n    YYYY-MO-DD HH.MI.SS", parent=self)
+
     def _fix_times(self, folder_var, point, button=None):
         """Read the true on-screen clock and fit a timeline for a point's folder.
 
@@ -397,6 +457,32 @@ class ReIDApp(ttk.Frame):
             messagebox.showerror("No folder", f"Pick a valid folder for point {point} first.",
                                  parent=self)
             return
+
+        # A previous review's samples, fit, region and pattern may already be
+        # saved as a v2 sidecar -- reopen it directly instead of reading the
+        # clock again. This is the same handful of small image reads the
+        # gallery already does synchronously per card, so it's done here
+        # rather than threaded, to keep the reopen path simple.
+        try:
+            saved = timestamp_ocr.load_scan_for_review(folder)
+        except Exception:
+            log.warning("Could not reopen saved review for %s", folder, exc_info=True)
+            saved = None
+        if saved is not None:
+            self.status.set(f"Point {point}: reopened the saved timestamp review.")
+            TimelineReviewDialog(self, point, saved)
+            return
+
+        # Compile the custom pattern (if any) up front and fail fast -- a typo
+        # here shouldn't be discovered only after a full background scan.
+        custom_pattern = None
+        pattern_text = self.ocr_time_pattern.get().strip()
+        if pattern_text:
+            try:
+                custom_pattern = timestamp_ocr.compile_custom_pattern(pattern_text)
+            except ValueError as exc:
+                messagebox.showerror("Bad time pattern", str(exc), parent=self)
+                return
 
         q: queue.Queue = queue.Queue()
         # Read Tk vars here, on the main thread, before handing off.
@@ -420,7 +506,8 @@ class ReIDApp(ttk.Frame):
                     q.put(("status", f"[{done}/{total}] Reading clock ({point}): {msg}"))
 
                 result = timestamp_ocr.scan_folder(
-                    folder, names, device=device, sample_count=samples, progress=progress)
+                    folder, names, device=device, sample_count=samples, progress=progress,
+                    custom_pattern=custom_pattern)
                 q.put(("done", result))
             except Exception as exc:  # surface errors to the UI thread
                 log.warning("Timestamp scan failed for %s", folder, exc_info=True)
@@ -630,6 +717,7 @@ class ReIDApp(ttk.Frame):
             "last_video_dir": self.last_video_dir.get(),
             "cluster_same_point": self.cluster_same_point.get(),
             "timeline_samples": self.timeline_samples.get(),
+            "ocr_time_pattern": self.ocr_time_pattern.get(),
         }
 
     def _save_settings(self):
@@ -1125,6 +1213,110 @@ class ModelManagerDialog(tk.Toplevel):
         self.destroy()
 
 
+class RegionPickerDialog(tk.Toplevel):
+    """Click-drag a rectangle around the clock on one frame.
+
+    Existing to fix exactly the failure a mismatched region produces: EasyOCR
+    finds a plausible-looking box of text and, if it never happens to contain
+    a date/time, ``find_overlay_region`` never anchors on the real clock and
+    every reading comes from whatever else has text -- a camera-model
+    watermark, a plate. Letting the user point at the clock once sidesteps
+    that guess entirely, and is faster too (no full-frame probing pass).
+
+    Result is delivered via ``on_done(region_or_None)`` rather than a return
+    value, matching this file's other dialogs -- none of them use
+    ``wait_window``, so a plain return value isn't available to the caller.
+    """
+
+    MAX_DISPLAY = (1000, 700)
+
+    def __init__(self, parent, image_path: str, on_done):
+        super().__init__(parent)
+        self.title("Mark the clock's position")
+        self.on_done = on_done
+        self._start = None
+        self._rect_id = None
+        self._box = None  # (x1, y1, x2, y2) in canvas/display pixels
+
+        from PIL import Image, ImageTk
+
+        img = Image.open(image_path).convert("RGB")
+        max_w, max_h = self.MAX_DISPLAY
+        # Only ever shrink to fit -- upscaling would make the drawn box
+        # imprecise relative to the actual pixels it needs to map back to.
+        self._scale = min(max_w / img.width, max_h / img.height, 1.0)
+        if self._scale < 1.0:
+            img = img.resize((max(1, int(img.width * self._scale)),
+                             max(1, int(img.height * self._scale))))
+        self._photo = ImageTk.PhotoImage(img)
+
+        ttk.Label(self, text="Click and drag a box around the on-screen clock, "
+                             "then click \"Use this box\".",
+                  wraplength=self._photo.width()).pack(padx=8, pady=(8, 4))
+
+        self.canvas = tk.Canvas(self, width=self._photo.width(), height=self._photo.height(),
+                                cursor="crosshair", highlightthickness=0)
+        self.canvas.pack(padx=8, pady=4)
+        self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
+        self.canvas.bind("<ButtonPress-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
+
+        footer = ttk.Frame(self)
+        footer.pack(fill="x", padx=8, pady=8)
+        self._use_btn = ttk.Button(footer, text="Use this box", state="disabled",
+                                   command=self._confirm)
+        self._use_btn.pack(side="right")
+        ttk.Button(footer, text="Cancel", command=self._cancel).pack(side="right", padx=4)
+
+        self.transient(parent)
+        self.grab_set()
+
+    def _on_press(self, event):
+        self._start = (event.x, event.y)
+        if self._rect_id is not None:
+            self.canvas.delete(self._rect_id)
+            self._rect_id = None
+
+    def _on_drag(self, event):
+        if self._start is None:
+            return
+        if self._rect_id is not None:
+            self.canvas.delete(self._rect_id)
+        x0, y0 = self._start
+        self._rect_id = self.canvas.create_rectangle(
+            x0, y0, event.x, event.y, outline="#ff3030", width=2)
+
+    def _on_release(self, event):
+        if self._start is None:
+            return
+        x0, y0 = self._start
+        w, h = self._photo.width(), self._photo.height()
+        x1, x2 = sorted((max(0, min(x0, w)), max(0, min(event.x, w))))
+        y1, y2 = sorted((max(0, min(y0, h)), max(0, min(event.y, h))))
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            # Too small to be a deliberate drag (a stray click) -- ignore it
+            # rather than accepting a box that can't contain any text.
+            self._box = None
+            self._use_btn.config(state="disabled")
+            return
+        self._box = (x1, y1, x2, y2)
+        self._use_btn.config(state="normal")
+
+    def _confirm(self):
+        if self._box is None:
+            return
+        x1, y1, x2, y2 = self._box
+        scale = self._scale or 1.0
+        region = (int(x1 / scale), int(y1 / scale), int(x2 / scale), int(y2 / scale))
+        self.on_done(region)
+        self.destroy()
+
+    def _cancel(self):
+        self.on_done(None)
+        self.destroy()
+
+
 class TimelineReviewDialog(tk.Toplevel):
     """Confirm (and correct) the fitted clock before it is written out.
 
@@ -1164,6 +1356,10 @@ class TimelineReviewDialog(tk.Toplevel):
         self.header = tk.StringVar()
         self.manual = tk.StringVar()
         self.detail_caption = tk.StringVar()
+        # Shared with the main window (like VideoExtractDialog's shared vars)
+        # via getattr with a fallback, so this dialog stays standalone-testable.
+        parent_pattern = getattr(parent, "ocr_time_pattern", None)
+        self.pattern_text = tk.StringVar(value=parent_pattern.get() if parent_pattern else "")
 
         self._build()
         self._refit()
@@ -1181,6 +1377,14 @@ class TimelineReviewDialog(tk.Toplevel):
         self._warn_label = ttk.Label(self, textvariable=self.warnings,
                                      foreground="#b00000", wraplength=1140, justify="left")
         self._warn_label.pack(anchor="w", **pad)
+
+        prow = ttk.Frame(self)
+        prow.pack(fill="x", **pad)
+        ttk.Label(prow, text="Custom time pattern:").pack(side="left")
+        ttk.Entry(prow, textvariable=self.pattern_text, width=36).pack(
+            side="left", fill="x", expand=True, padx=4)
+        ttk.Button(prow, text="Re-parse with this pattern",
+                   command=self._apply_custom_pattern).pack(side="left")
 
         clips_frame = ttk.Labelframe(self, text="Clips")
         clips_frame.pack(fill="x", **pad)
@@ -1233,7 +1437,10 @@ class TimelineReviewDialog(tk.Toplevel):
         detail = ttk.Labelframe(body, text="Selected frame")
         detail.pack(side="right", fill="y", padx=(8, 0))
         self._crop_label = ttk.Label(detail)
-        self._crop_label.pack(padx=6, pady=6)
+        self._crop_label.pack(padx=6, pady=(6, 0))
+        self._zoom_btn = ttk.Button(detail, text="Zoom in...", command=self._zoom_selected,
+                                    state="disabled")
+        self._zoom_btn.pack(padx=6, pady=(2, 6))
         ttk.Label(detail, textvariable=self.detail_caption, wraplength=380,
                   justify="left", font=("TkDefaultFont", 8)).pack(anchor="w", padx=6)
 
@@ -1258,6 +1465,12 @@ class TimelineReviewDialog(tk.Toplevel):
         ttk.Button(footer, text="Cancel", command=self.destroy).pack(side="right", padx=4)
         ttk.Button(footer, text="Read every frame instead (slow)",
                    command=self._full_ocr).pack(side="left")
+        self._mark_region_btn = ttk.Button(footer, text="Mark clock position...",
+                                           command=self._mark_region)
+        self._mark_region_btn.pack(side="left", padx=(4, 0))
+        self._resample_btn = ttk.Button(footer, text="Re-sample clock (fresh OCR)...",
+                                        command=lambda: self._rescan_with_region(None))
+        self._resample_btn.pack(side="left", padx=(4, 0))
 
     # --- fit + rendering ---------------------------------------------------
 
@@ -1329,6 +1542,46 @@ class TimelineReviewDialog(tk.Toplevel):
                         "no" if (s.ignored or s.chosen is None)
                         else ("yes" if s.name in fit.inliers else "no")))
 
+    def _apply_custom_pattern(self):
+        """Re-parse every sample's already-OCR'd text with a new pattern.
+
+        No OCR call, no image decode -- the raw text each candidate came
+        from is already sitting in ``TimeSample.candidates`` from the scan.
+        This is what lets a wrong initial read get fixed by describing the
+        overlay's actual layout, without a slow re-read of the clock.
+
+        Samples the user already corrected by hand (``edited``) are left
+        alone -- an explicit correction should never be silently overwritten
+        by a pattern change.
+        """
+        from dataclasses import replace
+
+        text = self.pattern_text.get().strip()
+        pattern = None
+        if text:
+            try:
+                pattern = timestamp_ocr.compile_custom_pattern(text)
+            except ValueError as exc:
+                messagebox.showerror("Bad time pattern", str(exc), parent=self)
+                return
+
+        updated = []
+        for s in self._samples:
+            if s.edited:
+                updated.append(s)
+                continue
+            candidates = tuple(timestamp_ocr.reparse_candidates(s.candidates, pattern))
+            chosen = next((c.timestamp for c in candidates if c.timestamp), None)
+            updated.append(replace(s, candidates=candidates, chosen=chosen))
+        self._samples = updated
+
+        # Remembered immediately (not only on Apply) so the *other* point's
+        # first scan already benefits, without the user having to redo this.
+        if hasattr(self._app, "ocr_time_pattern"):
+            self._app.ocr_time_pattern.set(text)
+
+        self._refit()
+
     # --- detail pane -------------------------------------------------------
 
     def _on_select_sample(self, _event=None):
@@ -1366,6 +1619,7 @@ class TimelineReviewDialog(tk.Toplevel):
         if crop is None:
             self._crop_label.config(image="")
             self._photo = None
+            self._zoom_btn.config(state="disabled")
             return
         try:
             from PIL import Image, ImageTk
@@ -1376,10 +1630,27 @@ class TimelineReviewDialog(tk.Toplevel):
                 img = img.resize((420, max(1, int(img.height * scale))))
             self._photo = ImageTk.PhotoImage(img)
             self._crop_label.config(image=self._photo)
+            self._zoom_btn.config(state="normal")
         except Exception:
             log.warning("Could not render clock crop for %s", sample.name, exc_info=True)
             self._crop_label.config(image="")
             self._photo = None
+            self._zoom_btn.config(state="disabled")
+
+    def _zoom_selected(self):
+        """Open the current sample's clock crop enlarged, in its own window.
+
+        The inline preview is capped at 420 px wide to keep the dialog
+        compact; that's not always enough to read small overlay text with
+        confidence, which is the whole point of looking at a sample by hand.
+        """
+        if self._selected is None:
+            return
+        sample = self._samples[self._selected]
+        crop = self.scan.crops.get(sample.name)
+        if crop is None:
+            return
+        _show_zoomed_crop(self, crop, f"{self.point}  {sample.name}")
 
     # --- edits -------------------------------------------------------------
 
@@ -1469,6 +1740,12 @@ class TimelineReviewDialog(tk.Toplevel):
             frames = timeline.apply_fit(self._fit, self.scan.keys)
             doc = timeline.build_document(self._fit, self._samples, frames,
                                           confirmed_by_user=True)
+            # Carried alongside the fit so a later "Fix times..." click can
+            # reopen this exact review (region, pattern, corrections) without
+            # any new OCR -- see timestamp_ocr.load_scan_for_review.
+            doc["region"] = list(self.scan.region) if self.scan.region else None
+            doc["region_is_manual"] = self.scan.region_is_manual
+            doc["custom_pattern"] = self.pattern_text.get().strip()
             timestamp_ocr.write_sidecar_doc(self.scan.folder, doc)
         except Exception as exc:
             log.warning("Could not write timestamps for %s", self.scan.folder, exc_info=True)
@@ -1536,6 +1813,99 @@ class TimelineReviewDialog(tk.Toplevel):
                             "OCR complete",
                             f"Read {payload}/{len(names)} timestamp(s).", parent=self)
                         self.destroy()
+                        return
+            except queue.Empty:
+                pass
+            self.after(100, poll)
+
+        self.after(100, poll)
+
+    def _mark_region(self):
+        """Let the user draw a box around the clock, then re-scan with it.
+
+        For when automatic detection locks onto the wrong text -- a camera
+        label, a license plate -- instead of the actual clock. That failure
+        shows up in the samples list as a confident-looking but unparseable
+        reading that's identical across every frame (the same watermark, read
+        again and again). A hand-picked region also skips the region-probe
+        pass on the next scan entirely, so it's faster as well as reliable.
+        """
+        if not self._samples:
+            messagebox.showinfo("No frame available",
+                                "There are no sampled frames to pick from.", parent=self)
+            return
+        image_path = os.path.join(self.scan.folder, self._samples[0].name)
+        if not os.path.isfile(image_path):
+            messagebox.showerror("Frame not found", f"Could not find {image_path}", parent=self)
+            return
+
+        def on_done(region):
+            if region is not None:
+                self._rescan_with_region(region)
+
+        RegionPickerDialog(self, image_path, on_done)
+
+    def _rescan_with_region(self, region):
+        """Re-run the sampled scan with a fixed region, replacing this review.
+
+        Reuses the exact filenames the current review already sampled from
+        (recovered from ``scan.keys``/``scan.unparsed``) so marking a region
+        doesn't quietly resample a different set of frames.
+        """
+        all_names = [k.name for k in self.scan.keys] + list(self.scan.unparsed)
+        device = self._app.device.get()
+        pattern_text = self.pattern_text.get().strip()
+        try:
+            custom_pattern = (timestamp_ocr.compile_custom_pattern(pattern_text)
+                              if pattern_text else None)
+        except ValueError as exc:
+            messagebox.showerror("Bad time pattern", str(exc), parent=self)
+            return
+        sample_count = max(len(self._samples), 1)
+
+        q: queue.Queue = queue.Queue()
+        self._apply_btn.config(state="disabled")
+        self._mark_region_btn.config(state="disabled")
+        self._resample_btn.config(state="disabled")
+        verb = "the marked region" if region is not None else "a fresh auto-detected region"
+        self._app.status.set(f"Re-reading clock for point {self.point} with {verb}...")
+
+        def worker():
+            try:
+                def progress(done, total, msg):
+                    q.put(("status", f"[{done}/{total}] {msg}"))
+
+                result = timestamp_ocr.scan_folder(
+                    self.scan.folder, all_names, device=device, sample_count=sample_count,
+                    progress=progress, custom_pattern=custom_pattern, region_override=region)
+                q.put(("done", result))
+            except Exception as exc:
+                log.warning("Re-scan with marked region failed for %s",
+                           self.scan.folder, exc_info=True)
+                q.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll():
+            try:
+                while True:
+                    kind, payload = q.get_nowait()
+                    if kind == "status":
+                        self._app.status.set(payload)
+                    elif kind == "error":
+                        self._apply_btn.config(state="normal")
+                        self._mark_region_btn.config(state="normal")
+                        self._resample_btn.config(state="normal")
+                        messagebox.showerror("Could not re-read timestamps", payload, parent=self)
+                        return
+                    elif kind == "done":
+                        self.scan = payload
+                        self._samples = list(payload.samples)
+                        self._apply_btn.config(state="normal")
+                        self._mark_region_btn.config(state="normal")
+                        self._resample_btn.config(state="normal")
+                        self._app.status.set(f"Point {self.point}: re-read the clock.")
+                        self._refit()
                         return
             except queue.Empty:
                 pass

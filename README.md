@@ -169,9 +169,29 @@ timezone bug, not a fit problem).
 Pick any sampled frame to see the alternative readings the OCR considered
 (with confidence), choose a different one, or type the correct time. The fit
 re-runs instantly on every edit, so you can watch the errors settle. There's
-also a **± seconds** nudge per clip or across all clips. **Apply** writes the
-times for every frame; **Read every frame instead** falls back to the slow
-exhaustive pass for footage a straight line genuinely can't describe.
+also a **± seconds** nudge per clip or across all clips, a **Zoom in** button
+on the selected frame's clock crop for text too small to read at the default
+size, and **Read every frame instead** as a fallback to the slow exhaustive
+pass for footage a straight line genuinely can't describe.
+
+If the overlay's clock uses a layout the built-in parser can't guess (a
+different field order, an unusual separator), type its shape into the
+**custom time pattern** field using a small token vocabulary (`YYYY`, `MO`,
+`DD`, `HH`/`hh`, `MI`, `SS`, `AP`; anything else is matched literally) — e.g.
+`YYYY-MO-DD HH.MI.SS` for `2026-07-24 17.40.50`. Click the **?** button next
+to the main window's version of this field for the full token list.
+**Re-parse with this pattern** applies it to the OCR text already collected
+— no new OCR call — and it's remembered for next time.
+
+If automatic detection locks onto the wrong text entirely (a camera-model
+watermark, a plate — visible as the same confident-looking non-time reading
+on every sampled frame), **Mark clock position...** lets you draw a box
+around the clock by hand on one frame; **Re-sample clock** re-reads the
+samples with that fixed region, which is also faster than the automatic
+probe. Both the region and every correction are saved, so clicking **Fix
+times...** again on the same folder reopens this exact review — corrections,
+custom pattern, marked region and all — with **no OCR call at all**, rather
+than reading the clock from scratch every time.
 
 Click **Process** again afterwards to pick up the corrected times. Each
 thumbnail's second caption line shows `[timeline]` when a frame's time came

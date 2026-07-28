@@ -71,6 +71,36 @@ def test_dash_separated_time():
     assert parse_overlay_text("2026-07-23 10-15-30") == datetime(2026, 7, 23, 10, 15, 30)
 
 
+def test_dot_separated_time():
+    # A real overlay format that reached us via a user report: dashes for the
+    # date, dots for the time ("2026-07-24 17.40.50"). Previously only colon
+    # and dash time separators were recognized, so this parsed as None and a
+    # whole scan came back with zero readable frames.
+    assert parse_overlay_text("2026-07-24 17.40.50") == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_dot_separated_date_and_time():
+    assert parse_overlay_text("2026.07.24 17.40.50") == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_dot_separated_time_with_am_pm():
+    assert parse_overlay_text("2026-07-24 05.40.50 PM") == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_dot_separated_time_tolerates_ocr_noise():
+    assert parse_overlay_text("2O26-O7-24 17.4O.5O") == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_dot_separated_time_with_surrounding_text():
+    assert parse_overlay_text("CAM01 2026-07-24 17.40.50 REC") == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_dot_separated_date_does_not_get_mistaken_for_time():
+    # Regression guard: the dot-time regex must not eat part of a dot-dated
+    # date and leave the actual time unfound.
+    assert parse_overlay_text("2026.07.24 10:15:30") == datetime(2026, 7, 24, 10, 15, 30)
+
+
 # --- parse_overlay_text: OCR noise ------------------------------------------
 
 def test_ocr_confuses_o_for_zero():
@@ -133,6 +163,133 @@ def test_explicit_cpu_never_uses_gpu():
 
 def test_explicit_cuda_index_counts_as_gpu():
     assert timestamp_ocr._reader_gpu_flag("cuda:1", cuda_available=False) == ("cuda:1", True)
+
+
+# --- custom overlay pattern ---------------------------------------------------
+# The escape hatch for overlay formats the tolerant built-in parser can't
+# guess. Users write it as a token template ("YYYY-MO-DD HH.MI.SS"), not a
+# raw regex, so most of the coverage here is about that template compiling
+# to the right thing and rejecting the ways it can be malformed.
+
+def test_compile_and_match_basic_pattern():
+    pattern = timestamp_ocr.compile_custom_pattern("YYYY-MO-DD HH.MI.SS")
+    ts = timestamp_ocr.parse_overlay_text("2026-07-24 17.40.50", pattern)
+    assert ts == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_compile_pattern_with_slashes_and_12_hour_clock():
+    pattern = timestamp_ocr.compile_custom_pattern("DD/MO/YYYY hh:MI:SS AP")
+    ts = timestamp_ocr.parse_overlay_text("24/07/2026 05:40:50 PM", pattern)
+    assert ts == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_compile_pattern_with_two_digit_year():
+    pattern = timestamp_ocr.compile_custom_pattern("YY-MO-DD HH:MI:SS")
+    ts = timestamp_ocr.parse_overlay_text("26-07-24 17:40:50", pattern)
+    assert ts == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_custom_pattern_ignores_surrounding_junk():
+    pattern = timestamp_ocr.compile_custom_pattern("YYYY-MO-DD HH.MI.SS")
+    ts = timestamp_ocr.parse_overlay_text("CAM01 2026-07-24 17.40.50 FIXED LENS", pattern)
+    assert ts == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_custom_pattern_tolerates_ocr_digit_noise():
+    pattern = timestamp_ocr.compile_custom_pattern("YYYY-MO-DD HH.MI.SS")
+    ts = timestamp_ocr.parse_overlay_text("2O26-O7-24 17.4O.5O", pattern)
+    assert ts == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_custom_pattern_rejects_invalid_date():
+    pattern = timestamp_ocr.compile_custom_pattern("YYYY-MO-DD HH:MI:SS")
+    assert timestamp_ocr.parse_overlay_text("2026-13-24 17:40:50", pattern) is None
+
+
+def test_custom_pattern_none_when_text_does_not_match():
+    pattern = timestamp_ocr.compile_custom_pattern("YYYY-MO-DD HH:MI:SS")
+    assert timestamp_ocr.parse_overlay_text("hello world", pattern) is None
+
+
+def test_custom_pattern_falls_back_to_builtin_parser():
+    # A pattern configured for the user's usual format shouldn't break parsing
+    # of a frame whose OCR text happens to match a completely different, but
+    # still valid, built-in layout.
+    pattern = timestamp_ocr.compile_custom_pattern("YYYY-MO-DD HH.MI.SS")
+    ts = timestamp_ocr.parse_overlay_text("2026-07-24 17:40:50", pattern)
+    assert ts == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_compile_rejects_empty_pattern():
+    with pytest.raises(ValueError):
+        timestamp_ocr.compile_custom_pattern("")
+
+
+def test_compile_rejects_missing_year():
+    with pytest.raises(ValueError, match="year"):
+        timestamp_ocr.compile_custom_pattern("MO-DD HH:MI:SS")
+
+
+def test_compile_rejects_missing_month_or_day():
+    with pytest.raises(ValueError, match="MO"):
+        timestamp_ocr.compile_custom_pattern("YYYY-DD HH:MI:SS")
+
+
+def test_compile_rejects_missing_hour():
+    with pytest.raises(ValueError, match="hour"):
+        timestamp_ocr.compile_custom_pattern("YYYY-MO-DD MI:SS")
+
+
+def test_compile_rejects_missing_minute_or_second():
+    with pytest.raises(ValueError, match="MI"):
+        timestamp_ocr.compile_custom_pattern("YYYY-MO-DD HH:SS")
+
+
+def test_compile_rejects_12_hour_without_ampm():
+    with pytest.raises(ValueError, match="AP"):
+        timestamp_ocr.compile_custom_pattern("YYYY-MO-DD hh:MI:SS")
+
+
+def test_compile_rejects_duplicate_token():
+    with pytest.raises(ValueError):
+        timestamp_ocr.compile_custom_pattern("YYYY-MO-DD HH:HH:SS")
+
+
+def test_compile_rejects_whitespace_only_pattern():
+    with pytest.raises(ValueError):
+        timestamp_ocr.compile_custom_pattern("   ")
+
+
+# --- reparse_candidates: apply a new pattern without re-running OCR ---------
+
+def test_reparse_uses_stored_text_no_ocr_needed():
+    stale = [
+        timestamp_ocr.TimestampCandidate(text="2026-07-24 17.40.50", timestamp=None,
+                                         confidence=0.9, origin="joined"),
+    ]
+    pattern = timestamp_ocr.compile_custom_pattern("YYYY-MO-DD HH.MI.SS")
+    fresh = timestamp_ocr.reparse_candidates(stale, pattern)
+    assert fresh[0].timestamp == datetime(2026, 7, 24, 17, 40, 50)
+    assert fresh[0].text == stale[0].text  # unchanged, just reparsed
+
+
+def test_reparse_re_ranks_newly_parseable_candidate_first():
+    candidates = [
+        timestamp_ocr.TimestampCandidate(text="Fixed Lens", timestamp=None,
+                                         confidence=0.99, origin="line"),
+        timestamp_ocr.TimestampCandidate(text="2026-07-24 17.40.50", timestamp=None,
+                                         confidence=0.40, origin="line"),
+    ]
+    pattern = timestamp_ocr.compile_custom_pattern("YYYY-MO-DD HH.MI.SS")
+    reparsed = timestamp_ocr.reparse_candidates(candidates, pattern)
+    assert reparsed[0].timestamp == datetime(2026, 7, 24, 17, 40, 50)
+
+
+def test_reparse_without_pattern_uses_builtin():
+    candidates = [timestamp_ocr.TimestampCandidate(
+        text="2026-07-24 17:40:50", timestamp=None, confidence=0.9, origin="joined")]
+    reparsed = timestamp_ocr.reparse_candidates(candidates)
+    assert reparsed[0].timestamp == datetime(2026, 7, 24, 17, 40, 50)
 
 
 # --- sidecar read/write -------------------------------------------------------
@@ -406,3 +563,139 @@ def test_scan_folder_skips_unreadable_images(tmp_path):
     result = timestamp_ocr.scan_folder(str(tmp_path), names, reader=_FakeReader([]))
     assert result.samples == []
     assert result.fit.ok is False
+
+
+# --- scan_folder: region_override ----------------------------------------
+
+def test_scan_folder_region_override_skips_the_probe(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+
+    names = []
+    for i in range(40):
+        name = f"A_20260723_100000_{i * 25:06d}.jpg"
+        cv2.imwrite(str(tmp_path / name), _blank_image())
+        names.append(name)
+
+    class _CountingReader:
+        """Fails if asked to OCR anything but the tiny region-override crop."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def readtext(self, image, detail=1):
+            self.calls += 1
+            # A region_override crop is 30x15; the full frame is 200x40 --
+            # this is how the test proves no full-frame probe happened.
+            assert image.shape[:2] == (15, 30)
+            result = [(_BBOX, "2026-07-23 10:15:30", 0.9)]
+            return [t for _b, t, _c in result] if detail == 0 else result
+
+    reader = _CountingReader()
+    result = timestamp_ocr.scan_folder(str(tmp_path), names, reader=reader,
+                                       region_override=(0, 0, 30, 15))
+    assert result.region == (0, 0, 30, 15)
+    assert result.region_is_manual is True
+    assert reader.calls == len(result.samples)  # one call per sample, no probe
+
+
+def test_scan_folder_without_override_is_not_manual(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    name = "A_20260723_100000_000000.jpg"
+    cv2.imwrite(str(tmp_path / name), _blank_image())
+    reader = _FakeReader([[(_BBOX, "2026-07-23 10:15:30", 0.9)]])
+    result = timestamp_ocr.scan_folder(str(tmp_path), [name], reader=reader)
+    assert result.region_is_manual is False
+
+
+# --- load_scan_for_review: reopen a saved review without OCR ----------------
+
+def _write_reviewable_doc(tmp_path, names, region=(1, 2, 3, 4)):
+    """A v2 sidecar shaped like one TimelineReviewDialog.Apply would write."""
+    doc = {
+        "version": 2, "source": "timeline", "x_kind": "frame_index",
+        "samples": [
+            {"name": name, "clip": 0, "x": i * 25,
+             "chosen_time": f"2026-07-23T10:{i:02d}:00",
+             "filename_time": "2026-07-23T10:00:00",
+             "edited": False, "ignored": False,
+             "candidates": [{"text": f"2026-07-23 10:{i:02d}:00",
+                            "time": f"2026-07-23T10:{i:02d}:00", "conf": 0.9}]}
+            for i, name in enumerate(names)
+        ],
+        "frames": {name: f"2026-07-23T10:{i:02d}:00" for i, name in enumerate(names)},
+        "region": list(region) if region else None,
+        "region_is_manual": region is not None,
+    }
+    timestamp_ocr.write_sidecar_doc(str(tmp_path), doc)
+    return doc
+
+
+def test_load_scan_for_review_reconstructs_samples_without_ocr(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    names = [f"A_20260723_100000_{i * 25:06d}.jpg" for i in range(5)]
+    for name in names:
+        cv2.imwrite(str(tmp_path / name), _blank_image())
+    _write_reviewable_doc(tmp_path, names)
+
+    result = timestamp_ocr.load_scan_for_review(str(tmp_path))
+    assert result is not None
+    assert len(result.samples) == 5
+    assert result.region == (1, 2, 3, 4)
+    assert result.region_is_manual is True
+    assert result.samples[0].chosen == datetime(2026, 7, 23, 10, 0, 0)
+    assert set(result.crops) == {s.name for s in result.samples}
+
+
+def test_load_scan_for_review_none_without_a_sidecar(tmp_path):
+    assert timestamp_ocr.load_scan_for_review(str(tmp_path)) is None
+
+
+def test_load_scan_for_review_none_for_v1_sidecar(tmp_path):
+    # A plain ocr_folder sidecar has no samples/fit to reopen into a review.
+    timestamp_ocr._save_sidecar(str(tmp_path), {"a.jpg": datetime(2026, 7, 23, 10, 0, 0)})
+    assert timestamp_ocr.load_scan_for_review(str(tmp_path)) is None
+
+
+def test_load_scan_for_review_none_when_v2_has_no_samples(tmp_path):
+    timestamp_ocr.write_sidecar_doc(str(tmp_path), {
+        "version": 2, "source": "timeline", "frames": {}})
+    assert timestamp_ocr.load_scan_for_review(str(tmp_path)) is None
+
+
+def test_load_scan_for_review_survives_missing_frame_files(tmp_path):
+    # The sidecar references frames; none of them exist on disk any more.
+    # This reaches the crop-loading loop (unlike the "none returned" tests
+    # above), so it does need cv2 importable, even though every read fails.
+    pytest.importorskip("cv2")
+    _write_reviewable_doc(tmp_path, ["gone1.jpg", "gone2.jpg"])
+    result = timestamp_ocr.load_scan_for_review(str(tmp_path))
+    assert result is not None
+    assert result.crops == {}  # nothing to crop, but it doesn't raise
+
+
+def test_load_scan_for_review_recomputes_the_fit(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    names = [f"A_20260723_100000_{i * 25:06d}.jpg" for i in range(20)]
+    for name in names:
+        cv2.imwrite(str(tmp_path / name), _blank_image())
+    _write_reviewable_doc(tmp_path, names)
+
+    result = timestamp_ocr.load_scan_for_review(str(tmp_path))
+    assert result.fit.n_samples == 20
+    assert result.fit.ok
+
+
+def test_load_scan_for_review_preserves_manual_edits(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    names = [f"A_20260723_100000_{i * 25:06d}.jpg" for i in range(5)]
+    for name in names:
+        cv2.imwrite(str(tmp_path / name), _blank_image())
+    doc = _write_reviewable_doc(tmp_path, names)
+    doc["samples"][2]["edited"] = True
+    doc["samples"][2]["chosen_time"] = "2026-07-23T11:00:00"
+    timestamp_ocr.write_sidecar_doc(str(tmp_path), doc)
+
+    result = timestamp_ocr.load_scan_for_review(str(tmp_path))
+    edited = next(s for s in result.samples if s.name == names[2])
+    assert edited.edited is True
+    assert edited.chosen == datetime(2026, 7, 23, 11, 0, 0)

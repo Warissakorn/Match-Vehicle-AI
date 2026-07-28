@@ -37,6 +37,7 @@ _SCHEMA: dict[str, type] = {
     "last_video_dir": str,
     "cluster_same_point": bool,
     "timeline_samples": int,
+    "ocr_time_pattern": str,
 }
 
 

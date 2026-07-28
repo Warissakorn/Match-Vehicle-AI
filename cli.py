@@ -78,8 +78,12 @@ def _fit_folder(folder: str, point: str, device, show_progress,
         return False
 
     frames = timeline.apply_fit(fit, scan.keys)
-    timestamp_ocr.write_sidecar_doc(
-        folder, timeline.build_document(fit, scan.samples, frames))
+    doc = timeline.build_document(fit, scan.samples, frames)
+    # Carried alongside the fit so the GUI can later reopen this exact scan
+    # for review without any new OCR -- see timestamp_ocr.load_scan_for_review.
+    doc["region"] = list(scan.region) if scan.region else None
+    doc["region_is_manual"] = scan.region_is_manual
+    timestamp_ocr.write_sidecar_doc(folder, doc)
     print(f"  Wrote {len(frames)} timestamp(s).")
     return True
 
