@@ -524,6 +524,24 @@ inaccurate timestamps" above) → **filename** → **EXIF** `DateTimeOriginal` �
 - `2026-07-23_10-15-30.jpg`
 - `20260723101530.jpg`
 
+## When the app won't start
+
+On Windows, double-clicking `run.bat` opens a console that closes with the
+process — so a startup crash used to look like "the window flashes and
+disappears", with the traceback gone. Two things now prevent that:
+
+- `run.bat` holds the console open when the app exits non-zero, so the error
+  is readable.
+- The traceback is written to `logs/` before the process exits, regardless of
+  how the app was launched.
+
+`tests/test_gui_startup.py` is the guard against the class of bug that caused
+it: the whole window (and the dialogs one click away) is constructed against a
+fake Tkinter, so a missing name or a bad call fails a test rather than the
+user's launcher. It exists because `python -m py_compile` cannot catch an
+undefined name that is only resolved when the function runs — which is exactly
+what shipped.
+
 ## Tests
 
 ```bash

@@ -66,4 +66,21 @@ if not "%REQ_HASH%"=="%OLD_HASH%" (
 
 echo Launching Match-Vehicle-AI GUI ...
 "%VPY%" app\gui.py %*
+set "EXITCODE=%ERRORLEVEL%"
+
+REM Double-clicking run.bat opens a console that closes the instant the batch
+REM file ends. When the app fails to start, the traceback is printed into that
+REM console and then vanishes with it -- which looks like "the window flashes
+REM and disappears" and leaves nothing to report. Hold the window open on a
+REM non-zero exit so the error is readable. A clean exit still closes at once.
+if not "%EXITCODE%"=="0" (
+    echo.
+    echo ---------------------------------------------------------------
+    echo Match-Vehicle-AI exited with an error ^(code %EXITCODE%^).
+    echo The details are printed above. A copy is also in logs\.
+    echo ---------------------------------------------------------------
+    echo.
+    pause
+)
 endlocal
+exit /b %EXITCODE%

@@ -42,7 +42,9 @@ sys.path.insert(0, os.path.join(_ROOT, "src"))
 sys.path.insert(0, _HERE)
 
 import config  # noqa: E402
+import i18n  # noqa: E402
 import theme  # noqa: E402
+from i18n import t  # noqa: E402
 from mash_reid import (  # noqa: E402
     logging_setup,
     matcher,
@@ -2606,4 +2608,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # A crash before or during window construction prints its traceback to a
+    # console that, when the app was double-clicked, closes with the process
+    # -- the user sees a window flash and has nothing to report. Logging it
+    # first means the details survive in logs/ regardless of how it was
+    # launched. Re-raised so the exit code is still non-zero and run.bat can
+    # hold its console open.
+    try:
+        main()
+    except Exception:
+        logging.getLogger("mash_reid.gui").exception("Startup failed")
+        raise
