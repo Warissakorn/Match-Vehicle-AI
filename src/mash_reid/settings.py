@@ -42,6 +42,7 @@ _SCHEMA: dict[str, type] = {
     "step1_open": bool,
     "step2_open": bool,
     "step3_open": bool,
+    "split_sash": int,
 }
 
 

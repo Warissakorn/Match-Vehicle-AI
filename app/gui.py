@@ -216,7 +216,7 @@ class ScrollableThumbs(ttk.Frame):
         self._canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0,
                                  background=theme.SURFACE)
         self._scroll = ttk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
-        self._inner = ttk.Frame(self._canvas, style="Card.TFrame")
+        self._inner = ttk.Frame(self._canvas, style="Surface.TFrame")
         self._inner.bind(
             "<Configure>",
             lambda e: self._canvas.configure(scrollregion=self._canvas.bbox("all")),
@@ -311,7 +311,7 @@ class ScrollableThumbs(ttk.Frame):
                       foreground=theme.NEUTRAL).pack(anchor="w")
 
         if on_confirm or on_reject:
-            row = ttk.Frame(card, style="Card.TFrame")
+            row = ttk.Frame(card, style="Surface.TFrame")
             row.pack(fill="x", pady=(theme.PAD_S, 0))
             status_lbl = ttk.Label(card, text="", style="Caption.TLabel")
             confirm_btn = ttk.Button(row, text="✓ Same", width=6)
@@ -338,11 +338,6 @@ class ScrollableThumbs(ttk.Frame):
 
 
 class ReIDApp(ttk.Frame):
-    #: Ceiling on the scrolling control stack's visible height. Chosen so that
-    #: with every step unfolded on the smallest supported window (600px tall,
-    #: see main()) the galleries still get a usable band rather than a sliver.
-    CONTROLS_MAX_HEIGHT = 420
-
     def __init__(self, master):
         super().__init__(master, padding=theme.PAD_L)
         self.pack(fill="both", expand=True)
@@ -404,6 +399,10 @@ class ReIDApp(ttk.Frame):
         }
         self.ui_theme = tk.StringVar(
             value=saved.get("ui_theme", theme.current_mode()))
+        # Divider between the settings and the results, in pixels from the
+        # top. 0 means "never set" -- leave the Panedwindow's own layout to
+        # decide, rather than forcing a guess on a first run.
+        self.split_sash = tk.IntVar(value=saved.get("split_sash", 0))
 
         self._res_a = None
         self._res_b = None
@@ -418,11 +417,68 @@ class ReIDApp(ttk.Frame):
         self._last_selected_a: VehicleRecord | None = None
         self._queue: queue.Queue = queue.Queue()
 
-        self._build_controls()
+        # Status bar first so its side="bottom" slot is claimed before any
+        # expanding widget takes the cavity (see _build_status_bar), then the
+        # split, then the two halves that live in it.
         self._build_status_bar()
+        self._build_split()
+        self._build_controls()
         self._build_panels()
+        # Restoring the divider has to wait for a real layout pass: before the
+        # window is mapped every pane reports height 1, and sashpos on an
+        # unmapped Panedwindow is silently ignored.
+        self.after_idle(self._restore_sash)
 
     # --- UI construction ---------------------------------------------------
+
+    def _build_split(self):
+        """Vertical Panedwindow: settings on top, results below, draggable.
+
+        The two halves used to divide themselves -- the settings took their
+        natural height (capped) and the galleries took the rest -- so how much
+        room the results got was never the user's call. A sash makes it one,
+        and the position is remembered between runs.
+        """
+        self._split = ttk.Panedwindow(self, orient="vertical")
+        self._split.pack(fill="both", expand=True)
+        self._split_top = ttk.Frame(self._split)
+        self._split_bottom = ttk.Frame(self._split)
+        # weight 0 / 1: growing the window gives the extra height to the
+        # results, not to the settings, which do not get more useful when
+        # taller. Dragging the sash still overrides that at any time.
+        self._split.add(self._split_top, weight=0)
+        self._split.add(self._split_bottom, weight=1)
+
+    #: On a first run, the settings get at most this share of the window and
+    #: the results keep the rest -- the results are what the window is for.
+    DEFAULT_SPLIT_FRACTION = 0.45
+
+    def _restore_sash(self):
+        """Place the divider: the remembered position, or a sane first-run one."""
+        try:
+            total = self._split.winfo_height()
+            if total <= 1:
+                # Not laid out yet. One more idle pass rather than writing a
+                # position computed from a height of 1.
+                self.after(60, self._restore_sash)
+                return
+            pos = self.split_sash.get()
+            if pos <= 0:
+                pos = min(self._split_top.winfo_reqheight(),
+                          int(total * self.DEFAULT_SPLIT_FRACTION))
+            # Clamped so a value remembered from a taller monitor cannot
+            # restore a divider dragged past the bottom edge, where there is
+            # nothing left to grab it by.
+            limit = max(120, total - 160)
+            self._split.sashpos(0, max(80, min(pos, limit)))
+        except tk.TclError:
+            log.debug("Could not place the divider", exc_info=True)
+
+    def _current_sash(self) -> int:
+        try:
+            return int(self._split.sashpos(0))
+        except (tk.TclError, ValueError):
+            return 0
 
     def _build_controls(self):
         """Three numbered cards -- frames, timestamps + model, matching.
@@ -434,12 +490,11 @@ class ReIDApp(ttk.Frame):
         Grouping them into steps is what makes that order readable, and is
         what the design doc's card + section-heading pattern is for.
         """
-        # The control stack scrolls and is height-capped, so however many
-        # steps are open the results area below keeps at least the rest of
-        # the window. Before this the settings simply pushed the galleries
-        # down until there was no room left to compare vehicles in.
-        scroller = theme.VScrollFrame(self, max_height=self.CONTROLS_MAX_HEIGHT)
-        scroller.pack(fill="x", pady=(0, theme.PAD_M))
+        # The control stack scrolls, so whatever height the divider leaves it,
+        # every setting stays reachable rather than being clipped. No height
+        # cap any more -- the sash is the cap now, and it is the user's to set.
+        scroller = theme.VScrollFrame(self._split_top)
+        scroller.pack(fill="both", expand=True, pady=(0, theme.PAD_M))
         top = scroller.body
         self._controls_scroller = scroller
 
@@ -455,7 +510,7 @@ class ReIDApp(ttk.Frame):
 
         for label, var, pt in (("Point A", self.dir_a, "A"),
                                ("Point B", self.dir_b, "B")):
-            row = ttk.Frame(step1, style="Card.TFrame")
+            row = ttk.Frame(step1, style="Surface.TFrame")
             row.pack(fill="x", pady=(0, theme.PAD_S))
             ttk.Label(row, text=label, width=9, style="Card.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=var).pack(
@@ -482,7 +537,7 @@ class ReIDApp(ttk.Frame):
 
         for label, var, pt in (("Point A", self.dir_a, "A"),
                                ("Point B", self.dir_b, "B")):
-            row = ttk.Frame(step2, style="Card.TFrame")
+            row = ttk.Frame(step2, style="Surface.TFrame")
             row.pack(fill="x", pady=(0, theme.PAD_S))
             ttk.Label(row, text=label, width=9, style="Card.TLabel").pack(side="left")
             btn = ttk.Button(row, text="Fix times...")
@@ -494,7 +549,7 @@ class ReIDApp(ttk.Frame):
             self._time_labels[pt] = lbl
             self._refresh_time_status(pt)
 
-        mrow = ttk.Frame(step2, style="Card.TFrame")
+        mrow = ttk.Frame(step2, style="Surface.TFrame")
         mrow.pack(fill="x", pady=(theme.PAD_S, 0))
         ttk.Label(mrow, text="Model", width=9, style="Card.TLabel").pack(side="left")
         self._model_combo = ttk.Combobox(
@@ -512,7 +567,7 @@ class ReIDApp(ttk.Frame):
         # Compute device: "auto" resolves to CUDA if a GPU is present, else
         # CPU. Probing CUDA touches torch, so it's deferred to a background
         # thread rather than blocking window construction.
-        drow = ttk.Frame(step2, style="Card.TFrame")
+        drow = ttk.Frame(step2, style="Surface.TFrame")
         drow.pack(fill="x", pady=(theme.PAD_S, 0))
         ttk.Label(drow, text="Device", width=9, style="Card.TLabel").pack(side="left")
         self._device_combo = ttk.Combobox(
@@ -536,14 +591,14 @@ class ReIDApp(ttk.Frame):
         step3.pack(fill="x")
         step3 = step3.body
 
-        opts = ttk.Frame(step3, style="Card.TFrame")
+        opts = ttk.Frame(step3, style="Surface.TFrame")
         opts.pack(fill="x")
         self._add_slider(opts, "Similarity", self.threshold, 0.0, 1.0)
         self._add_slider(opts, "Detect conf", self.det_conf, 0.05, 0.9)
         self._add_slider(opts, "Min travel (s)", self.min_travel, 0.0, 1800.0)
         self._add_slider(opts, "Max travel (s)", self.max_travel, 10.0, 3600.0)
 
-        toggles = ttk.Frame(step3, style="Card.TFrame")
+        toggles = ttk.Frame(step3, style="Surface.TFrame")
         toggles.pack(fill="x", pady=(theme.PAD_M, 0))
         ttk.Checkbutton(toggles, text="Use time gate", variable=self.use_gate,
                         command=self._rematch).pack(side="left", padx=(0, theme.PAD_L))
@@ -643,9 +698,9 @@ class ReIDApp(ttk.Frame):
         self.after(config.RESOURCE_POLL_MS, self._poll_resources)
 
     def _add_slider(self, parent, label, var, lo, hi):
-        frame = ttk.Frame(parent, style="Card.TFrame")
+        frame = ttk.Frame(parent, style="Surface.TFrame")
         frame.pack(side="left", fill="x", expand=True, padx=(0, theme.PAD_L))
-        head = ttk.Frame(frame, style="Card.TFrame")
+        head = ttk.Frame(frame, style="Surface.TFrame")
         head.pack(fill="x")
         ttk.Label(head, text=label, style="Caption.TLabel").pack(side="left")
         val = ttk.Label(head, style="Value.TLabel")
@@ -661,7 +716,7 @@ class ReIDApp(ttk.Frame):
         _on_move()
 
     def _build_panels(self):
-        panes = ttk.Panedwindow(self, orient="horizontal")
+        panes = ttk.Panedwindow(self._split_bottom, orient="horizontal")
         panes.pack(fill="both", expand=True)
 
         # theme.panel, not ttk.Labelframe: a Labelframe draws its caption
@@ -677,7 +732,7 @@ class ReIDApp(ttk.Frame):
         # Header line mirroring point B's: this is where the gallery cap is
         # now reported, so it no longer has to fight the shared status bar
         # for the same line of text.
-        a_toolbar = ttk.Frame(left, style="Card.TFrame")
+        a_toolbar = ttk.Frame(left, style="Surface.TFrame")
         a_toolbar.pack(fill="x", pady=(0, theme.PAD_S))
         self.a_view_label = tk.StringVar(value="No results yet - run Process")
         ttk.Label(a_toolbar, textvariable=self.a_view_label,
@@ -686,7 +741,7 @@ class ReIDApp(ttk.Frame):
         self.gallery_a = ScrollableThumbs(left, columns=2)
         self.gallery_a.pack(fill="both", expand=True)
 
-        b_toolbar = ttk.Frame(right, style="Card.TFrame")
+        b_toolbar = ttk.Frame(right, style="Surface.TFrame")
         b_toolbar.pack(fill="x", pady=(0, theme.PAD_S))
         self.b_view_label = tk.StringVar(value="Showing: all point B vehicles")
         ttk.Label(b_toolbar, textvariable=self.b_view_label,
@@ -998,6 +1053,7 @@ class ReIDApp(ttk.Frame):
             "step1_open": self.step_open["1"].get(),
             "step2_open": self.step_open["2"].get(),
             "step3_open": self.step_open["3"].get(),
+            "split_sash": self._current_sash(),
         }
 
     def _save_settings(self):

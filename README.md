@@ -237,9 +237,10 @@ The window is laid out as the three steps the workflow actually has, in order.
 Each step folds away with the triangle in its header (or by clicking the header
 itself), and the fold state is remembered between runs — once the folders and
 clocks are settled, folding steps 1 and 2 hands the whole height back to the
-galleries, which is where the actual comparing happens. The control stack also
-scrolls and is height-capped, so even with everything unfolded the results area
-keeps its share of a laptop screen.
+galleries, which is where the actual comparing happens. **A draggable divider**
+separates the settings from the results: drag it to give either half as much
+height as you want, and its position is remembered too. The settings half
+scrolls, so wherever the divider sits nothing is out of reach.
 
 **Step 1 — Frames.** Browse to the **Point A** and **Point B** frame folders, or
 click **From video...** to extract frames from a video first.
@@ -320,6 +321,10 @@ measure only 2.2–2.5:1 as text on white.
 `ttk.Labelframe` is used nowhere in the app: it draws its caption straddling
 the top border and `clam` leaves no gap behind it, so the 1px rule ran straight
 through the text. `theme.panel()` puts the caption above the border instead.
+For the same reason `Card.TFrame` (bordered) and `Surface.TFrame` (the same
+fill, no border) are separate styles: a bordered style reused for the rows and
+fillers *inside* a card makes each of them draw its own rectangle, which in one
+case rendered as a rule running through a section title.
 
 The bottom bar shows CPU/RAM/GPU usage alongside the status text (each field
 reads "n/a" if its dependency or a GPU isn't present) — useful for telling

@@ -393,9 +393,26 @@ def apply(root: tk.Misc, mode: str = DEFAULT_MODE) -> Fonts:
     # --- Surfaces -----------------------------------------------------------
     style.configure(".", background=BACKGROUND, foreground=TEXT,
                     fieldbackground=SURFACE, bordercolor=BORDER,
+                    # clam draws every bevel from lightcolor/darkcolor, and its
+                    # own defaults are pale greys chosen for a light theme --
+                    # left alone they outline every bordered widget in near
+                    # white against a dark surface.
+                    lightcolor=BORDER, darkcolor=BORDER,
                     font=fonts.body)
     style.configure("TFrame", background=BACKGROUND)
-    style.configure("Card.TFrame", background=SURFACE, relief="solid", borderwidth=1)
+    # Card carries the 1px border; Surface is the same fill with *no* border,
+    # for the rows, header strips and fillers that live inside a card.
+    #
+    # These were one style, and every inner container therefore drew its own
+    # rectangle. Mostly invisible in light mode (#E8E8EC on #FFFFFF), it was
+    # glaring in dark, and one case was a defect in either scheme: the zero
+    # height filler that stretches a collapsible header to full width rendered
+    # as a horizontal rule running from the section title to the card's edge,
+    # straight through the row -- the "text on a line" the section captions
+    # were already fixed for.
+    style.configure("Card.TFrame", background=SURFACE, relief="solid", borderwidth=1,
+                    bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
+    style.configure("Surface.TFrame", background=SURFACE, relief="flat", borderwidth=0)
     style.configure("TLabel", background=BACKGROUND, foreground=TEXT)
     style.configure("Card.TLabel", background=SURFACE, foreground=TEXT)
 
@@ -503,7 +520,8 @@ def apply(root: tk.Misc, mode: str = DEFAULT_MODE) -> Fonts:
 
     # Panel: the Labelframe replacement -- a bordered surface with no label of
     # its own, captioned by a separate Panel.TLabel above it.
-    style.configure("Panel.TFrame", background=SURFACE, relief="solid", borderwidth=1)
+    style.configure("Panel.TFrame", background=SURFACE, relief="solid", borderwidth=1,
+                    bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
     style.configure("Panel.TLabel", background=BACKGROUND, foreground=TEXT_SECONDARY,
                     font=fonts.overline)
     # Same caption, for a panel nested inside a card (surface, not window bg).
@@ -521,6 +539,12 @@ def apply(root: tk.Misc, mode: str = DEFAULT_MODE) -> Fonts:
               foreground=[("active", PRIMARY)])
 
     style.configure("TPanedwindow", background=BACKGROUND)
+    # The divider has to be both visible and wide enough to grab. clam's
+    # default sash is a hairline in the frame colour, which on either scheme
+    # reads as a seam rather than as something draggable.
+    style.configure("Sash", sashthickness=7, gripcount=0,
+                    background=BORDER, bordercolor=BORDER,
+                    lightcolor=BORDER, darkcolor=BORDER, handlesize=0)
     style.configure("TSeparator", background=BORDER)
 
     style.configure("Treeview", background=SURFACE, fieldbackground=SURFACE,
@@ -541,12 +565,6 @@ def apply(root: tk.Misc, mode: str = DEFAULT_MODE) -> Fonts:
                     bordercolor=BORDER, lightcolor=PRIMARY, darkcolor=PRIMARY)
 
     return fonts
-
-
-def card(parent, **kwargs) -> ttk.Frame:
-    """A white 1px-bordered panel on the 4px grid -- the Genesis "Card"."""
-    kwargs.setdefault("padding", PAD_L)
-    return ttk.Frame(parent, style="Card.TFrame", **kwargs)
 
 
 class CollapsibleCard(ttk.Frame):
@@ -572,7 +590,7 @@ class CollapsibleCard(ttk.Frame):
         self._expanded = bool(expanded)
         self._on_toggle = on_toggle
 
-        header = ttk.Frame(self, style="Card.TFrame")
+        header = ttk.Frame(self, style="Surface.TFrame")
         header.pack(fill="x")
         self._chevron = ttk.Button(header, style="Chevron.TButton",
                                    text=self.OPEN if self._expanded else self.CLOSED,
@@ -584,7 +602,7 @@ class CollapsibleCard(ttk.Frame):
         title_lbl.pack(side="left")
         # A spacer that fills the rest of the row, so clicking the empty space
         # to the right of the title also toggles.
-        filler = ttk.Frame(header, style="Card.TFrame")
+        filler = ttk.Frame(header, style="Surface.TFrame")
         filler.pack(side="left", fill="x", expand=True)
         for widget in (header, step_lbl, title_lbl, filler):
             widget.bind("<Button-1>", lambda _e: self.toggle())
@@ -595,7 +613,7 @@ class CollapsibleCard(ttk.Frame):
             self._hint = ttk.Label(self, text=hint, style="Caption.TLabel",
                                    wraplength=760, justify="left")
 
-        self.body = ttk.Frame(self, style="Card.TFrame")
+        self.body = ttk.Frame(self, style="Surface.TFrame")
         self._render()
 
     def _render(self):
@@ -630,7 +648,7 @@ def panel(parent, caption: str, on_card: bool = False, **kwargs):
     body. The caption sits *above* the border rather than across it, which is
     the whole reason this exists (see the TLabelframe comment in ``apply``).
     """
-    container = ttk.Frame(parent, style="Card.TFrame" if on_card else "TFrame")
+    container = ttk.Frame(parent, style="Surface.TFrame" if on_card else "TFrame")
     ttk.Label(container, text=caption.upper(),
               style="PanelOnCard.TLabel" if on_card else "Panel.TLabel"
               ).pack(anchor="w", pady=(0, PAD_S))
@@ -689,9 +707,15 @@ class VScrollFrame(ttk.Frame):
 
     def _on_body_configure(self, _event=None):
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        # Requested height follows the content (capped, when a cap is given).
+        # Without this the canvas keeps Tk's own default of 7c, which is both
+        # arbitrary and the number a Panedwindow would use to place its sash.
+        # Where the frame is packed with expand=True the request is ignored
+        # anyway, so tracking it costs nothing there.
+        wanted = self.body.winfo_reqheight()
         if self._max_height is not None:
-            self._canvas.configure(
-                height=min(self.body.winfo_reqheight(), self._max_height))
+            wanted = min(wanted, self._max_height)
+        self._canvas.configure(height=max(1, wanted))
 
     def _on_scroll_set(self, first, last):
         self._bar.set(first, last)
