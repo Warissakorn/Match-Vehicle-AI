@@ -231,14 +231,27 @@ That build's `torch.cuda.is_available()` is always `False`, so `cuda` won't
 appear in the Device dropdown / `--device` choices — this looks identical to
 "no GPU" from the app's side, but is actually just the wrong wheel installed.
 
-**`run.sh`/`run.bat` handle this automatically:** on a first run (or whenever
-`requirements.txt` changes), the launcher checks for `nvidia-smi`; if found, it
-installs a CUDA build of `torch`/`torchvision` *before* the regular
-`requirements.txt` install, so the plain install sees a compatible version
-already there and leaves it alone. This is best-effort (falls back to the CPU
-build if the CUDA install fails) and only runs during that install step, not
-on every launch — delete `.venv/.requirements.sha256` (or the whole `.venv`)
-to force it to re-check, e.g. after installing a GPU driver.
+**`run.sh`/`run.bat` handle this automatically** by running
+`tools/install_torch.py` during dependency installation. That helper:
+
+1. reads the installed NVIDIA driver version from `nvidia-smi`;
+2. picks the **CUDA build that driver actually supports** (`cu124`, `cu121` or
+   `cu118`) and installs it *before* the regular `requirements.txt` install, so
+   the plain install sees a compatible `torch` already there and leaves it alone;
+3. verifies the result and prints one line telling you whether the GPU will
+   really be used — e.g. `GPU ready: NVIDIA GeForce RTX 3060 (CUDA 12.1)`.
+
+Matching the wheel to the driver matters: a build newer than the driver
+installs *successfully* but still reports `torch.cuda.is_available() == False`,
+which looks exactly like having no GPU. If your driver is older than every CUDA
+build above, the helper says so and stays on CPU rather than installing
+something that can't initialize — update the driver to enable GPU support.
+
+The whole step is best-effort (any failure falls back to the CPU build) and
+only runs when dependencies are installed, not on every launch. **Delete
+`.venv` (or just `.venv/.requirements.sha256`) and re-run the launcher to force
+a re-check** — e.g. after installing or updating a GPU driver, or after
+upgrading from a version of this project that didn't have the check.
 
 If you installed manually (`pip install -r requirements.txt` yourself) or the
 automatic install still isn't picking up your GPU, the app tells you which
