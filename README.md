@@ -38,12 +38,20 @@ timestamp** the thing the gate lives or dies on; see "Fixing inaccurate
 timestamps (OCR)" below if a video's declared fps/start-time drifts from the
 footage's real clock.
 
-`matcher.py` also groups **repeat sightings of the same vehicle within one
+`matcher.py` can also group **repeat sightings of the same vehicle within one
 point** (e.g. a car circling back past the same camera) via
 `cluster_same_point` — appearance-only, no time gate, since all detections are
 already known to be at that point. Every detection still appears in the
 GUI/CLI output; repeats are just tagged so they read as one vehicle instead of
 several.
+
+**This is off by default.** It compares every vehicle at a point against every
+other, which at a real gallery size (12,000 vehicles) is a ~590 GFLOP pass
+peaking over 1 GB — per point, and its result isn't cached, so on a warm cache
+it becomes the single dominant cost of a run while feeding nothing but a
+caption tag. Nothing else depends on it: matching, the travel-time gate and
+the training export are all independent. Turn it on with the **Group repeat
+sightings** checkbox in the GUI or `--cluster-same-point` on the CLI.
 
 ## Quick start (one-click launcher)
 
@@ -117,21 +125,75 @@ directly on timestamps, a wrong clock means wrong or missing matches. If your
 footage burns the true capture time into the frame as on-screen text (common
 on CCTV), OCR-ing it fixes this without re-extracting anything.
 
-**GUI:** click **Fix times (OCR)...** next to a point's folder (after
-extracting or on an existing folder of stills). It locates the on-screen
-timestamp once from a sample frame, reads every frame's clock, and writes the
-result as a `.timestamps.json` sidecar in that folder — a one-time cost per
-folder, not a per-run one. Click **Process** again afterwards to pick up the
-corrected times; each thumbnail's second caption line shows `[ocr]` when a
-frame's time came from this sidecar (vs. `[filename]`/`[exif]`/`[mtime]`).
+### How it works: sample, then fit
 
-**CLI:** `--ocr-time` on `cli.py` or `extract_video.py` runs the same OCR pass
-before processing / right after extraction.
+Reading the clock on every frame is both slow and fragile — a 12,000-frame
+folder takes tens of minutes, and each reading is accepted on its own, so a
+single misread digit is committed silently. Worse, frames the OCR *fails* on
+keep their filename time, so one folder ends up carrying two different clocks.
 
-Timestamp priority is: **OCR sidecar → filename → EXIF → file mtime** — the
+Extracted frames carry their source frame index in the filename and are
+sampled at a fixed interval, so the clock is a straight line in that index:
+
+```
+true_time = clip_start + frame_index / fps
+```
+
+That's two unknowns per clip. So instead of reading 12,000 frames, the app
+reads about **40**, then fits the line through them with a robust estimator
+(Theil–Sen plus one outlier-rejection pass). Roughly **300× less OCR**, and
+*more* accurate — a misread lands far off the line and is discarded, and
+frames whose clock couldn't be read at all still get a correct time from the
+fit, which is what removes the two-clocks problem.
+
+### Reviewing the result
+
+**GUI:** click **Fix times...** next to a point's folder. When the scan
+finishes, a review window shows what was found:
+
+- the fitted **rate** (as fps) and each clip's **start time**
+- how many sampled readings **agree** with the line, the typical error and the
+  worst one
+- warnings when something looks wrong (implausible frame rate, readings that
+  don't line up, a worst-case error suggesting gaps or a variable frame rate)
+- the sampled frames, each with the **clock crop**, the raw OCR text, and —
+  importantly — the **filename clock beside the read clock**
+
+That last column is the point of the review. A robust fit defends against
+*independent* misreads, but it cannot detect a *systematic* one: if the
+overlay font makes every `8` read as `6`, the readings stay mutually
+consistent and the residuals look perfect. The gap between the two clocks is
+what a human can actually judge ("everything is exactly 3 h 12 m off" is a
+timezone bug, not a fit problem).
+
+Pick any sampled frame to see the alternative readings the OCR considered
+(with confidence), choose a different one, or type the correct time. The fit
+re-runs instantly on every edit, so you can watch the errors settle. There's
+also a **± seconds** nudge per clip or across all clips. **Apply** writes the
+times for every frame; **Read every frame instead** falls back to the slow
+exhaustive pass for footage a straight line genuinely can't describe.
+
+Click **Process** again afterwards to pick up the corrected times. Each
+thumbnail's second caption line shows `[timeline]` when a frame's time came
+from a fit (or `[ocr]` from the older every-frame pass, vs.
+`[filename]`/`[exif]`/`[mtime]`).
+
+**CLI:** `--ocr-time` on `cli.py` or `extract_video.py` does the same fit
+headlessly. Since nobody is there to eyeball a suspicious result, it *refuses*
+to write when the sanity checks fail — `--force` overrides. `--ocr-samples N`
+changes how many frames are sampled, and `--ocr-every-frame` selects the old
+exhaustive path.
+
+Timestamp priority is: **sidecar → filename → EXIF → file mtime** — the
 sidecar wins whenever present, since it reflects the footage's real clock
 rather than an assumption about it. Uses [EasyOCR](https://github.com/JaidedAI/EasyOCR); install it via `requirements.txt` (a one-time model
 download on first use).
+
+> Accuracy is bounded by the **time span** the samples cover, not by how many
+> you take: the clock only displays whole seconds, and that 1 s quantum
+> divides by the span. Samples spread across a three-hour clip pin the rate far
+> better than the same number bunched into a few minutes — which is why they're
+> spread evenly, endpoints included.
 
 ## Usage
 
@@ -353,7 +415,18 @@ via `pytest.importorskip` when it isn't installed, matching CI's minimal
 All tunables live in `config.py`: vehicle classes, default detection model,
 detection confidence, timestamp patterns, similarity threshold, travel-time
 window, embedder batch size / half precision, resource-bar poll interval, and
-the settings file location. The selectable detection models are catalogued in
+the settings file location.
+
+Timeline-fit tunables sit there too — how many frames to sample
+(`DEFAULT_TIMELINE_SAMPLE_TARGET`, and the per-clip floor), the outlier
+tolerance, and the thresholds behind each review warning. One of them is
+load-bearing rather than cosmetic: `TIMELINE_INLIER_FLOOR_SECONDS`. The
+overlay clock shows whole seconds, so on clean footage the readings agree
+*exactly* and the measured spread is zero; without a floor under the outlier
+tolerance, the band collapses to zero width and every sample gets rejected.
+Same-point clustering is switched by `DEFAULT_ENABLE_SAME_POINT_CLUSTERING`.
+
+The selectable detection models are catalogued in
 `src/mash_reid/model_registry.py` and downloaded/updated via
 `src/mash_reid/model_manager.py` — add a `ModelInfo` entry to offer another one.
 

@@ -203,6 +203,8 @@ class ReIDApp(ttk.Frame):
         # Shared with VideoExtractDialog so the last-used interval and video
         # folder are remembered across dialog opens, not just within one.
         self.extract_interval = tk.DoubleVar(value=saved.get("extract_interval", 1.0))
+        self.timeline_samples = tk.IntVar(
+            value=saved.get("timeline_samples", config.DEFAULT_TIMELINE_SAMPLE_TARGET))
         self.last_video_dir = tk.StringVar(value=saved.get("last_video_dir", ""))
         self.status = tk.StringVar(value="Select folders for point A and B, then Process.")
 
@@ -240,8 +242,9 @@ class ReIDApp(ttk.Frame):
                        command=lambda v=var: self._browse(v)).pack(side="left")
             ttk.Button(row, text="From video...",
                        command=lambda v=var, p=pt: self._extract_from_video(v, p)).pack(side="left", padx=(4, 0))
-            ttk.Button(row, text="Fix times (OCR)...",
-                       command=lambda v=var, p=pt: self._fix_times(v, p)).pack(side="left", padx=(4, 0))
+            btn = ttk.Button(row, text="Fix times...")
+            btn.config(command=lambda v=var, p=pt, b=btn: self._fix_times(v, p, b))
+            btn.pack(side="left", padx=(4, 0))
 
         # Detection model picker + manager
         mrow = ttk.Frame(top)
@@ -376,23 +379,32 @@ class ReIDApp(ttk.Frame):
         """Open a dialog to extract frames from a video into a point folder."""
         VideoExtractDialog(self, point, folder_var)
 
-    def _fix_times(self, folder_var, point):
-        """OCR the true on-screen clock for every frame in a point's folder.
+    def _fix_times(self, folder_var, point, button=None):
+        """Read the true on-screen clock and fit a timeline for a point's folder.
 
-        Runs once per folder (result is cached as a sidecar file, see
-        ``mash_reid.timestamp_ocr``), so this button is a one-time correction
-        rather than something that has to be re-run every Process. Uses its
-        own queue/thread pair (independent of ``_process_worker``'s) since it
-        can be triggered before or after a Process run.
+        Only a sample of frames is read (see ``mash_reid.timeline``); the
+        clock's rate and each clip's start time are then solved for and
+        applied to every frame. The result opens in a review window for
+        confirmation rather than being written straight out -- a robust fit
+        catches *independent* misreads, but a systematically misread digit
+        produces a self-consistent line that only a human can spot.
+
+        Uses its own queue/thread pair (independent of ``_process_worker``'s)
+        since it can be triggered before or after a Process run.
         """
         folder = folder_var.get().strip()
         if not folder or not os.path.isdir(folder):
-            messagebox.showerror("No folder", f"Pick a valid folder for point {point} first.")
+            messagebox.showerror("No folder", f"Pick a valid folder for point {point} first.",
+                                 parent=self)
             return
 
         q: queue.Queue = queue.Queue()
-        device = self.device.get()  # read on the main thread before handing off
-        self.status.set(f"OCR-ing timestamps for point {point}...")
+        # Read Tk vars here, on the main thread, before handing off.
+        device = self.device.get()
+        samples = self.timeline_samples.get()
+        if button is not None:
+            button.config(state="disabled")  # one scan per folder at a time
+        self.status.set(f"Reading clock samples for point {point}...")
 
         def worker():
             try:
@@ -400,16 +412,25 @@ class ReIDApp(ttk.Frame):
                     f for f in os.listdir(folder)
                     if os.path.splitext(f)[1].lower() in config.IMAGE_EXTENSIONS
                 )
+                if not names:
+                    q.put(("error", f"No images found in {folder}"))
+                    return
 
                 def progress(done, total, msg):
-                    q.put(("status", f"[{done}/{total}] OCR point {point}: {msg}"))
+                    q.put(("status", f"[{done}/{total}] Reading clock ({point}): {msg}"))
 
-                results = timestamp_ocr.ocr_folder(folder, names, device=device, progress=progress)
-                q.put(("done", (point, len(results), len(names))))
+                result = timestamp_ocr.scan_folder(
+                    folder, names, device=device, sample_count=samples, progress=progress)
+                q.put(("done", result))
             except Exception as exc:  # surface errors to the UI thread
+                log.warning("Timestamp scan failed for %s", folder, exc_info=True)
                 q.put(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
+
+        def finish():
+            if button is not None:
+                button.config(state="normal")
 
         def poll():
             try:
@@ -418,18 +439,17 @@ class ReIDApp(ttk.Frame):
                     if kind == "status":
                         self.status.set(payload)
                     elif kind == "error":
-                        self.status.set("OCR failed.")
-                        messagebox.showerror("OCR failed", payload)
+                        finish()
+                        self.status.set("Reading the clock failed.")
+                        messagebox.showerror("Could not read timestamps", payload, parent=self)
                         return
                     elif kind == "done":
-                        pt, found, total = payload
+                        finish()
+                        read = sum(1 for s in payload.samples if s.chosen)
                         self.status.set(
-                            f"Point {pt}: read {found}/{total} timestamp(s) via OCR. "
-                            f"Click Process again to use the corrected times.")
-                        messagebox.showinfo(
-                            "OCR complete",
-                            f"Read {found}/{total} timestamp(s) for point {pt}.\n\n"
-                            f"Click Process again to use the corrected times.")
+                            f"Point {point}: read {read}/{len(payload.samples)} sampled "
+                            f"clock(s). Review and confirm to apply.")
+                        TimelineReviewDialog(self, point, payload)
                         return
             except queue.Empty:
                 pass
@@ -608,6 +628,8 @@ class ReIDApp(ttk.Frame):
             "one_to_one": self.one_to_one.get(),
             "extract_interval": self.extract_interval.get(),
             "last_video_dir": self.last_video_dir.get(),
+            "cluster_same_point": self.cluster_same_point.get(),
+            "timeline_samples": self.timeline_samples.get(),
         }
 
     def _save_settings(self):
@@ -1101,6 +1123,425 @@ class ModelManagerDialog(tk.Toplevel):
         if self._on_close:
             self._on_close()
         self.destroy()
+
+
+class TimelineReviewDialog(tk.Toplevel):
+    """Confirm (and correct) the fitted clock before it is written out.
+
+    Deliberately a summary plus two lists rather than a row per frame: the
+    fit reduces 12,000 frames to one rate and a start time per clip, so that
+    is what there is to check. A per-frame table would also mean thousands of
+    image-bearing widgets, which is exactly what makes the main gallery slow.
+
+    The one thing a robust fit cannot catch is a *systematic* misread -- if
+    the overlay font makes every "8" read as "6", the readings stay mutually
+    consistent and the residuals look perfect. That is why the samples list
+    shows the filename time beside the read time: the gap between the two
+    clocks is the thing a human can actually judge.
+
+    Follows this file's dialog convention: Toplevel + _build() + transient +
+    grab_set, no wait_window; the result is written to disk on Apply rather
+    than returned.
+    """
+
+    CLIP_COLUMNS = ("clip", "frames", "samples", "start", "mad", "worst", "offset")
+    SAMPLE_COLUMNS = ("n", "clip", "x", "filename", "text", "conf", "read", "residual", "in")
+
+    def __init__(self, parent, point, scan):
+        super().__init__(parent)
+        self.title(f"Review timestamps - point {point}")
+        self.geometry("1180x680")
+        self.point = point
+        self.scan = scan
+        self._app = parent
+        self._samples = list(scan.samples)
+        self._fit = scan.fit
+        self._photo = None  # keeps the detail-pane crop from being GC'd
+        self._selected = None
+
+        self.summary = tk.StringVar()
+        self.warnings = tk.StringVar()
+        self.header = tk.StringVar()
+        self.manual = tk.StringVar()
+        self.detail_caption = tk.StringVar()
+
+        self._build()
+        self._refit()
+        self.transient(parent)
+        self.grab_set()
+
+    # --- construction ------------------------------------------------------
+
+    def _build(self):
+        pad = {"padx": 8, "pady": 4}
+
+        ttk.Label(self, textvariable=self.header, font=("TkDefaultFont", 9, "bold")
+                  ).pack(anchor="w", **pad)
+        ttk.Label(self, textvariable=self.summary).pack(anchor="w", **pad)
+        self._warn_label = ttk.Label(self, textvariable=self.warnings,
+                                     foreground="#b00000", wraplength=1140, justify="left")
+        self._warn_label.pack(anchor="w", **pad)
+
+        clips_frame = ttk.Labelframe(self, text="Clips")
+        clips_frame.pack(fill="x", **pad)
+        self.clips_tree = ttk.Treeview(clips_frame, columns=self.CLIP_COLUMNS,
+                                       show="headings", height=4)
+        for col, title, width in (
+                ("clip", "Clip", 60), ("frames", "Frames", 80), ("samples", "Read", 80),
+                ("start", "Start time", 190), ("mad", "Typical error", 110),
+                ("worst", "Worst", 90), ("offset", "Manual offset", 110)):
+            self.clips_tree.heading(col, text=title)
+            self.clips_tree.column(col, width=width, anchor="w")
+        self.clips_tree.tag_configure("borrowed", foreground="#b06000")
+        self.clips_tree.pack(fill="x", padx=4, pady=4)
+
+        nudge = ttk.Frame(clips_frame)
+        nudge.pack(fill="x", padx=4, pady=(0, 4))
+        ttk.Button(nudge, text="Shift selected clip",
+                   command=lambda: self._nudge(selected_only=True)).pack(side="left")
+        ttk.Button(nudge, text="Shift all clips",
+                   command=lambda: self._nudge(selected_only=False)).pack(side="left", padx=4)
+        self.nudge_seconds = tk.DoubleVar(value=0.0)
+        ttk.Spinbox(nudge, from_=-3600.0, to=3600.0, increment=0.5, width=10,
+                    textvariable=self.nudge_seconds).pack(side="left", padx=4)
+        ttk.Label(nudge, text="seconds").pack(side="left")
+
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, **pad)
+
+        samples_frame = ttk.Labelframe(body, text="Sampled frames")
+        samples_frame.pack(side="left", fill="both", expand=True)
+        self.samples_tree = ttk.Treeview(samples_frame, columns=self.SAMPLE_COLUMNS,
+                                         show="headings")
+        for col, title, width in (
+                ("n", "#", 40), ("clip", "Clip", 45), ("x", "Frame", 75),
+                ("filename", "Filename clock", 150), ("text", "OCR text", 190),
+                ("conf", "Conf", 55), ("read", "Read clock", 150),
+                ("residual", "Off by", 70), ("in", "Used", 50)):
+            self.samples_tree.heading(col, text=title)
+            self.samples_tree.column(col, width=width, anchor="w")
+        self.samples_tree.tag_configure("outlier", foreground="#b00000")
+        self.samples_tree.tag_configure("edited", foreground="#0050b0")
+        self.samples_tree.tag_configure("unread", foreground="#909090")
+        self.samples_tree.bind("<<TreeviewSelect>>", self._on_select_sample)
+        sbar = ttk.Scrollbar(samples_frame, orient="vertical",
+                             command=self.samples_tree.yview)
+        self.samples_tree.configure(yscrollcommand=sbar.set)
+        self.samples_tree.pack(side="left", fill="both", expand=True)
+        sbar.pack(side="right", fill="y")
+
+        detail = ttk.Labelframe(body, text="Selected frame")
+        detail.pack(side="right", fill="y", padx=(8, 0))
+        self._crop_label = ttk.Label(detail)
+        self._crop_label.pack(padx=6, pady=6)
+        ttk.Label(detail, textvariable=self.detail_caption, wraplength=380,
+                  justify="left", font=("TkDefaultFont", 8)).pack(anchor="w", padx=6)
+
+        ttk.Label(detail, text="Readings the OCR considered:").pack(anchor="w", padx=6, pady=(8, 0))
+        self.candidate_combo = ttk.Combobox(detail, state="readonly", width=52)
+        self.candidate_combo.pack(padx=6, pady=2)
+
+        ttk.Label(detail, text="Or type the correct time (YYYY-MM-DD HH:MM:SS):"
+                  ).pack(anchor="w", padx=6, pady=(8, 0))
+        ttk.Entry(detail, textvariable=self.manual, width=54).pack(padx=6, pady=2)
+
+        buttons = ttk.Frame(detail)
+        buttons.pack(fill="x", padx=6, pady=6)
+        ttk.Button(buttons, text="Use this", command=self._use_selection).pack(side="left")
+        ttk.Button(buttons, text="Ignore frame", command=self._ignore_selected).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Reset", command=self._reset_selected).pack(side="left")
+
+        footer = ttk.Frame(self)
+        footer.pack(fill="x", **pad)
+        self._apply_btn = ttk.Button(footer, text="Apply and write times", command=self._apply)
+        self._apply_btn.pack(side="right")
+        ttk.Button(footer, text="Cancel", command=self.destroy).pack(side="right", padx=4)
+        ttk.Button(footer, text="Read every frame instead (slow)",
+                   command=self._full_ocr).pack(side="left")
+
+    # --- fit + rendering ---------------------------------------------------
+
+    def _refit(self):
+        """Recompute the fit from the current readings and repaint.
+
+        Cheap enough to run on every edit (a few hundred pairwise slopes), so
+        the user watches the residuals move as they correct a reading --
+        which is what makes the review meaningful rather than ceremonial.
+        """
+        from mash_reid import timeline
+
+        self._fit = timeline.fit_timeline(
+            self._samples, x_kind=self.scan.x_kind, all_keys=self.scan.keys)
+        self._render()
+
+    def _render(self):
+        fit = self._fit
+        clips = len({k.clip for k in self.scan.keys})
+        axis = ("source frame index" if self.scan.x_kind == "frame_index"
+                else "position in folder")
+        self.header.set(f"{self.scan.folder}   -   {len(self.scan.keys)} frames, "
+                        f"{clips} clip(s), timed by {axis}")
+
+        rate = (f"{fit.implied_fps:.2f} fps" if fit.implied_fps
+                else f"{fit.slope:.4f} s/frame")
+        read = sum(1 for s in self._samples if s.chosen)
+        self.summary.set(
+            f"Rate {rate}   |   read {read}/{len(self._samples)} sampled clocks   |   "
+            f"{fit.n_inliers}/{fit.n_samples} agree ({fit.inlier_fraction:.0%})   |   "
+            f"typical error {fit.residual_mad:.2f} s   |   worst {fit.max_abs_residual:.2f} s")
+        self.warnings.set("\n".join(fit.warnings))
+
+        self.clips_tree.delete(*self.clips_tree.get_children())
+        frames_per_clip = Counter(k.clip for k in self.scan.keys)
+        for clip in sorted(fit.clips):
+            cf = fit.clips[clip]
+            self.clips_tree.insert(
+                "", "end", iid=str(clip), tags=() if cf.fitted else ("borrowed",),
+                values=(clip, frames_per_clip.get(clip, 0),
+                        f"{cf.n_inliers}/{cf.n_samples}" if cf.fitted else "borrowed",
+                        cf.start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        f"{cf.residual_mad:.2f} s", f"{cf.max_abs_residual:.2f} s",
+                        f"{cf.user_offset_seconds:+.1f} s"))
+
+        self.samples_tree.delete(*self.samples_tree.get_children())
+        for i, s in enumerate(self._samples):
+            residual = fit.residuals.get(s.name)
+            if s.ignored:
+                tag = "unread"
+            elif s.chosen is None:
+                tag = "unread"
+            elif s.edited:
+                tag = "edited"
+            elif s.name not in fit.inliers:
+                tag = "outlier"
+            else:
+                tag = ""
+            best = s.candidates[0].text if s.candidates else ""
+            conf = f"{s.candidates[0].confidence:.2f}" if s.candidates else ""
+            self.samples_tree.insert(
+                "", "end", iid=str(i), tags=(tag,) if tag else (),
+                values=(i + 1, s.clip, s.x,
+                        s.filename_time.strftime("%H:%M:%S") if s.filename_time else "-",
+                        best[:40],
+                        conf,
+                        s.chosen.strftime("%Y-%m-%d %H:%M:%S") if s.chosen else "unread",
+                        f"{residual:+.1f} s" if residual is not None else "-",
+                        "no" if (s.ignored or s.chosen is None)
+                        else ("yes" if s.name in fit.inliers else "no")))
+
+    # --- detail pane -------------------------------------------------------
+
+    def _on_select_sample(self, _event=None):
+        selection = self.samples_tree.selection()
+        if not selection:
+            return
+        index = int(selection[0])
+        self._selected = index
+        sample = self._samples[index]
+
+        self._show_crop(sample)
+        gap = ""
+        if sample.chosen and sample.filename_time:
+            delta = (sample.chosen - sample.filename_time).total_seconds()
+            gap = f"\nOverlay clock is {delta:+.0f} s from the filename clock."
+        self.detail_caption.set(f"{sample.name}{gap}")
+
+        values = [f"{c.timestamp:%Y-%m-%d %H:%M:%S}   ({c.confidence:.2f})   {c.text[:40]}"
+                  if c.timestamp else f"(unreadable)   ({c.confidence:.2f})   {c.text[:40]}"
+                  for c in sample.candidates]
+        self.candidate_combo.config(values=values)
+        if values:
+            self.candidate_combo.current(0)
+        else:
+            self.candidate_combo.set("")
+        self.manual.set(sample.chosen.strftime("%Y-%m-%d %H:%M:%S") if sample.chosen else "")
+
+    def _show_crop(self, sample):
+        """Render the clock region for the selected frame, if we kept it.
+
+        Converted here rather than in the worker because ImageTk needs a live
+        Tk root; the raw BGR arrays travel from the scan thread untouched.
+        """
+        crop = self.scan.crops.get(sample.name)
+        if crop is None:
+            self._crop_label.config(image="")
+            self._photo = None
+            return
+        try:
+            from PIL import Image, ImageTk
+
+            img = Image.fromarray(crop[:, :, ::-1])  # cv2 gives BGR
+            if img.width > 420:
+                scale = 420 / img.width
+                img = img.resize((420, max(1, int(img.height * scale))))
+            self._photo = ImageTk.PhotoImage(img)
+            self._crop_label.config(image=self._photo)
+        except Exception:
+            log.warning("Could not render clock crop for %s", sample.name, exc_info=True)
+            self._crop_label.config(image="")
+            self._photo = None
+
+    # --- edits -------------------------------------------------------------
+
+    def _replace_selected(self, **changes):
+        from dataclasses import replace
+
+        if self._selected is None:
+            messagebox.showinfo("No frame selected",
+                                "Pick a row in the sampled frames list first.", parent=self)
+            return False
+        self._samples[self._selected] = replace(self._samples[self._selected], **changes)
+        return True
+
+    def _use_selection(self):
+        """Apply the typed time if given, otherwise the chosen candidate."""
+        from datetime import datetime  # lazy, matching this module's convention
+
+        if self._selected is None:
+            messagebox.showinfo("No frame selected",
+                                "Pick a row in the sampled frames list first.", parent=self)
+            return
+
+        text = self.manual.get().strip()
+        if text:
+            try:
+                chosen = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                messagebox.showerror("Bad time", f"Could not read '{text}'. "
+                                     "Use YYYY-MM-DD HH:MM:SS.", parent=self)
+                return
+        else:
+            index = self.candidate_combo.current()
+            candidates = self._samples[self._selected].candidates
+            if index < 0 or index >= len(candidates):
+                return
+            chosen = candidates[index].timestamp
+            if chosen is None:
+                messagebox.showerror("Unreadable", "That reading did not parse as a time; "
+                                     "type the correct one instead.", parent=self)
+                return
+
+        if self._replace_selected(chosen=chosen, edited=True, ignored=False):
+            self._refit()
+
+    def _ignore_selected(self):
+        if self._replace_selected(ignored=True):
+            self._refit()
+
+    def _reset_selected(self):
+        """Back to whatever the OCR originally picked for this frame."""
+        if self._selected is None:
+            return
+        sample = self._samples[self._selected]
+        original = next((c.timestamp for c in sample.candidates if c.timestamp), None)
+        if self._replace_selected(chosen=original, edited=False, ignored=False):
+            self._refit()
+
+    def _nudge(self, selected_only: bool):
+        from mash_reid import timeline
+
+        seconds = float(self.nudge_seconds.get())
+        if not seconds:
+            return
+        clip = None
+        if selected_only:
+            selection = self.clips_tree.selection()
+            if not selection:
+                messagebox.showinfo("No clip selected",
+                                    "Pick a clip row first, or use 'Shift all clips'.",
+                                    parent=self)
+                return
+            clip = int(selection[0])
+        self._fit = timeline.nudge(self._fit, seconds, clip=clip)
+        self._render()
+
+    # --- outcomes ----------------------------------------------------------
+
+    def _apply(self):
+        from mash_reid import timeline
+
+        if not self._fit.ok and not messagebox.askyesno(
+                "Fit looks wrong",
+                "\n".join(self._fit.warnings) + "\n\nWrite these times anyway?",
+                parent=self):
+            return
+        try:
+            frames = timeline.apply_fit(self._fit, self.scan.keys)
+            doc = timeline.build_document(self._fit, self._samples, frames,
+                                          confirmed_by_user=True)
+            timestamp_ocr.write_sidecar_doc(self.scan.folder, doc)
+        except Exception as exc:
+            log.warning("Could not write timestamps for %s", self.scan.folder, exc_info=True)
+            messagebox.showerror("Could not write times", str(exc), parent=self)
+            return
+
+        self._app.status.set(
+            f"Point {self.point}: wrote {len(frames)} timestamp(s). "
+            f"Click Process again to use the corrected times.")
+        messagebox.showinfo(
+            "Times written",
+            f"Wrote {len(frames)} timestamp(s) for point {self.point}.\n\n"
+            f"Click Process again to use the corrected times.", parent=self)
+        self.destroy()
+
+    def _full_ocr(self):
+        """Fall back to reading every frame, for footage the line can't describe.
+
+        Kept because the linear model genuinely fails on variable-frame-rate
+        video, recordings with dropped frames, or a clock adjusted mid-record
+        -- the cases the "worst reading" warning flags.
+        """
+        if not messagebox.askyesno(
+                "Read every frame?",
+                f"This reads the clock on all {len(self.scan.keys)} frames and can take "
+                f"many minutes. Use it only if the fitted clock above looks wrong.\n\n"
+                f"Continue?", parent=self):
+            return
+
+        folder = self.scan.folder
+        names = [k.name for k in self.scan.keys]
+        device = self._app.device.get()
+        q: queue.Queue = queue.Queue()
+        self._apply_btn.config(state="disabled")
+
+        def worker():
+            try:
+                def progress(done, total, msg):
+                    q.put(("status", f"[{done}/{total}] {msg}"))
+
+                results = timestamp_ocr.ocr_folder(folder, names, device=device,
+                                                   progress=progress)
+                q.put(("done", len(results)))
+            except Exception as exc:
+                log.warning("Full-frame OCR failed for %s", folder, exc_info=True)
+                q.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll():
+            try:
+                while True:
+                    kind, payload = q.get_nowait()
+                    if kind == "status":
+                        self._app.status.set(payload)
+                    elif kind == "error":
+                        self._apply_btn.config(state="normal")
+                        messagebox.showerror("OCR failed", payload, parent=self)
+                        return
+                    elif kind == "done":
+                        self._app.status.set(
+                            f"Point {self.point}: read {payload}/{len(names)} timestamp(s). "
+                            f"Click Process again to use the corrected times.")
+                        messagebox.showinfo(
+                            "OCR complete",
+                            f"Read {payload}/{len(names)} timestamp(s).", parent=self)
+                        self.destroy()
+                        return
+            except queue.Empty:
+                pass
+            self.after(100, poll)
+
+        self.after(100, poll)
 
 
 def main():
