@@ -505,9 +505,18 @@ def test_source_is_ocr_when_no_sidecar(tmp_path):
 
 
 # --- describe_sidecar (main-window step-2 status line) -------------------------
+#
+# Returns (level, template, values) rather than a finished sentence so the GUI
+# can translate the template before substituting -- see app/i18n.py.
+
+def _rendered(folder):
+    """(level, the sentence a caller would show)."""
+    level, template, values = timestamp_ocr.describe_sidecar(folder)
+    return level, template.format(**values)
+
 
 def test_describe_sidecar_reports_nothing_reviewed(tmp_path):
-    level, text = timestamp_ocr.describe_sidecar(str(tmp_path))
+    level, text = _rendered(str(tmp_path))
     assert level == "none"
     assert "filename" in text
 
@@ -516,7 +525,7 @@ def test_describe_sidecar_confirmed_fit_is_ok(tmp_path):
     doc = _v2_doc({"a.jpg": datetime(2026, 7, 23, 10, 15, 30)})
     doc.update({"confirmed_by_user": True, "implied_fps": 29.97, "warnings": []})
     timestamp_ocr.write_sidecar_doc(str(tmp_path), doc)
-    level, text = timestamp_ocr.describe_sidecar(str(tmp_path))
+    level, text = _rendered(str(tmp_path))
     assert level == "ok"
     assert "1 frame time(s)" in text
     assert "29.97 fps" in text
@@ -529,7 +538,7 @@ def test_describe_sidecar_unconfirmed_fit_warns(tmp_path):
     doc = _v2_doc({"a.jpg": datetime(2026, 7, 23, 10, 15, 30)})
     doc.update({"confirmed_by_user": False, "warnings": []})
     timestamp_ocr.write_sidecar_doc(str(tmp_path), doc)
-    level, text = timestamp_ocr.describe_sidecar(str(tmp_path))
+    level, text = _rendered(str(tmp_path))
     assert level == "warn"
     assert "not confirmed" in text
 
@@ -544,7 +553,7 @@ def test_describe_sidecar_warns_when_the_fit_flagged_problems(tmp_path):
 def test_describe_sidecar_handles_v1_flat_files(tmp_path):
     timestamp_ocr._save_sidecar(str(tmp_path), {"a.jpg": datetime(2026, 7, 23, 10, 0, 0),
                                                 "b.jpg": datetime(2026, 7, 23, 10, 0, 1)})
-    level, text = timestamp_ocr.describe_sidecar(str(tmp_path))
+    level, text = _rendered(str(tmp_path))
     assert level == "ok"
     assert "2 frame time(s)" in text
     assert "every-frame" in text
@@ -556,15 +565,35 @@ def test_describe_sidecar_ignores_a_non_numeric_fps(tmp_path):
     doc = _v2_doc({"a.jpg": datetime(2026, 7, 23, 10, 15, 30)})
     doc.update({"confirmed_by_user": True, "implied_fps": "fast", "warnings": []})
     timestamp_ocr.write_sidecar_doc(str(tmp_path), doc)
-    level, text = timestamp_ocr.describe_sidecar(str(tmp_path))
+    level, template, values = timestamp_ocr.describe_sidecar(str(tmp_path))
     assert level == "ok"
-    assert "fps" not in text
+    assert "fps" not in template and "fps" not in values
 
 
 def test_describe_sidecar_survives_a_corrupt_file(tmp_path):
     (tmp_path / config.TIMESTAMP_SIDECAR_NAME).write_text("{not json", encoding="utf-8")
     assert timestamp_ocr.describe_sidecar(str(tmp_path))[0] == "none"
 
+
+def test_describe_sidecar_template_and_values_always_agree(tmp_path):
+    """Every branch must return a template whose fields the values fill --
+    a mismatch would raise mid-render in the one place that repaints on
+    every keystroke."""
+    import re as _re
+    cases = [
+        {},
+        {"confirmed_by_user": True, "implied_fps": 25.0, "warnings": []},
+        {"confirmed_by_user": True, "warnings": []},
+        {"confirmed_by_user": False, "implied_fps": 30.0, "warnings": ["x"]},
+        {"confirmed_by_user": False, "warnings": []},
+    ]
+    for extra in cases:
+        doc = _v2_doc({"a.jpg": datetime(2026, 7, 23, 10, 15, 30)})
+        doc.update(extra)
+        timestamp_ocr.write_sidecar_doc(str(tmp_path), doc)
+        _, template, values = timestamp_ocr.describe_sidecar(str(tmp_path))
+        assert set(_re.findall(r"\{(\w+)\}", template)) == set(values), (template, values)
+        template.format(**values)  # must not raise
 
 def test_unknown_version_still_yields_frames(tmp_path):
     doc = _v2_doc({"a.jpg": datetime(2026, 7, 23, 10, 15, 30)})
