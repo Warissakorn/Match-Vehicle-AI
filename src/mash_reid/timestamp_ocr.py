@@ -603,6 +603,47 @@ def load_sidecar_source(folder: str) -> str:
     return source if isinstance(source, str) and source else "ocr"
 
 
+def describe_sidecar(folder: str) -> tuple[str, str]:
+    """One-line summary of a folder's timestamp state, as ``(level, text)``.
+
+    ``level`` is one of ``"none"``, ``"warn"`` or ``"ok"``, for the caller to
+    map onto a colour. Exists because a folder's timestamp state was
+    previously invisible from the main window: the only way to find out
+    whether times had been reviewed was to click "Fix times...", wait for the
+    review to open, and read the summary -- so in practice people either
+    re-reviewed folders they had already done, or ran Process on filename
+    times without noticing.
+
+    Reads only the sidecar's metadata, never its per-frame map, so it is
+    cheap enough to call whenever a folder path changes.
+    """
+    raw = load_sidecar_doc(folder)
+    if raw is None:
+        return "none", "no timestamp review yet - times come from filenames"
+
+    frames = len(_frames_map(raw))
+    if not isinstance(raw.get("version"), int):
+        # v1: a flat name->iso map from the old every-frame OCR pass. No
+        # metadata to report beyond how many frames it covers.
+        return "ok", f"{frames} frame time(s) from an every-frame OCR pass"
+
+    source = raw.get("source")
+    confirmed = bool(raw.get("confirmed_by_user"))
+    warnings = raw.get("warnings")
+    warned = bool(warnings) if isinstance(warnings, list) else False
+
+    if source == "timeline":
+        # Top level, not under "stats" -- see timeline.build_document.
+        fps = raw.get("implied_fps")
+        rate = (f", {fps:.2f} fps"
+                if isinstance(fps, (int, float)) and not isinstance(fps, bool) and fps
+                else "")
+        who = "confirmed" if confirmed else "fitted (not confirmed)"
+        text = f"{frames} frame time(s) {who} from a fitted clock{rate}"
+        return ("warn" if warned or not confirmed else "ok"), text
+    return "ok", f"{frames} frame time(s) from an every-frame OCR pass"
+
+
 def write_sidecar_doc(folder: str, doc: dict) -> None:
     """Write a v2 sidecar atomically.
 

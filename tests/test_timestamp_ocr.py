@@ -13,6 +13,7 @@ from datetime import datetime
 import numpy as np
 import pytest
 
+import config
 from mash_reid import timestamp_ocr
 from mash_reid.timestamp_ocr import parse_overlay_text
 
@@ -501,6 +502,68 @@ def test_source_is_ocr_for_v1(tmp_path):
 
 def test_source_is_ocr_when_no_sidecar(tmp_path):
     assert timestamp_ocr.load_sidecar_source(str(tmp_path)) == "ocr"
+
+
+# --- describe_sidecar (main-window step-2 status line) -------------------------
+
+def test_describe_sidecar_reports_nothing_reviewed(tmp_path):
+    level, text = timestamp_ocr.describe_sidecar(str(tmp_path))
+    assert level == "none"
+    assert "filename" in text
+
+
+def test_describe_sidecar_confirmed_fit_is_ok(tmp_path):
+    doc = _v2_doc({"a.jpg": datetime(2026, 7, 23, 10, 15, 30)})
+    doc.update({"confirmed_by_user": True, "implied_fps": 29.97, "warnings": []})
+    timestamp_ocr.write_sidecar_doc(str(tmp_path), doc)
+    level, text = timestamp_ocr.describe_sidecar(str(tmp_path))
+    assert level == "ok"
+    assert "1 frame time(s)" in text
+    assert "29.97 fps" in text
+
+
+def test_describe_sidecar_unconfirmed_fit_warns(tmp_path):
+    # Written by the CLI rather than confirmed in the review dialog: the times
+    # are usable but nobody has actually looked at them, which is exactly the
+    # distinction this line exists to make visible.
+    doc = _v2_doc({"a.jpg": datetime(2026, 7, 23, 10, 15, 30)})
+    doc.update({"confirmed_by_user": False, "warnings": []})
+    timestamp_ocr.write_sidecar_doc(str(tmp_path), doc)
+    level, text = timestamp_ocr.describe_sidecar(str(tmp_path))
+    assert level == "warn"
+    assert "not confirmed" in text
+
+
+def test_describe_sidecar_warns_when_the_fit_flagged_problems(tmp_path):
+    doc = _v2_doc({"a.jpg": datetime(2026, 7, 23, 10, 15, 30)})
+    doc.update({"confirmed_by_user": True, "warnings": ["only 40% of readings agree"]})
+    timestamp_ocr.write_sidecar_doc(str(tmp_path), doc)
+    assert timestamp_ocr.describe_sidecar(str(tmp_path))[0] == "warn"
+
+
+def test_describe_sidecar_handles_v1_flat_files(tmp_path):
+    timestamp_ocr._save_sidecar(str(tmp_path), {"a.jpg": datetime(2026, 7, 23, 10, 0, 0),
+                                                "b.jpg": datetime(2026, 7, 23, 10, 0, 1)})
+    level, text = timestamp_ocr.describe_sidecar(str(tmp_path))
+    assert level == "ok"
+    assert "2 frame time(s)" in text
+    assert "every-frame" in text
+
+
+def test_describe_sidecar_ignores_a_non_numeric_fps(tmp_path):
+    # A hand-edited or foreign file must not crash the main window's status
+    # line -- it is repainted on every keystroke in the folder entry.
+    doc = _v2_doc({"a.jpg": datetime(2026, 7, 23, 10, 15, 30)})
+    doc.update({"confirmed_by_user": True, "implied_fps": "fast", "warnings": []})
+    timestamp_ocr.write_sidecar_doc(str(tmp_path), doc)
+    level, text = timestamp_ocr.describe_sidecar(str(tmp_path))
+    assert level == "ok"
+    assert "fps" not in text
+
+
+def test_describe_sidecar_survives_a_corrupt_file(tmp_path):
+    (tmp_path / config.TIMESTAMP_SIDECAR_NAME).write_text("{not json", encoding="utf-8")
+    assert timestamp_ocr.describe_sidecar(str(tmp_path))[0] == "none"
 
 
 def test_unknown_version_still_yields_frames(tmp_path):

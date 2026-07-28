@@ -30,12 +30,19 @@ import tkinter as tk
 from collections import Counter
 from tkinter import filedialog, messagebox, ttk
 
-# Make ``config`` (project root) and the ``mash_reid`` package importable.
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Make ``config`` (project root), the ``mash_reid`` package, and this file's
+# own directory importable. The last one matters because there is no
+# ``app/__init__.py``: launched as ``python app/gui.py`` the directory is
+# already sys.path[0], but launched as ``python -m app.gui`` it is not, and
+# ``import theme`` would fail in that mode without it.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "src"))
+sys.path.insert(0, _HERE)
 
 import config  # noqa: E402
+import theme  # noqa: E402
 from mash_reid import (  # noqa: E402
     logging_setup,
     matcher,
@@ -71,25 +78,21 @@ def _load_thumb(record: VehicleRecord, size=THUMB_SIZE):
 
 
 def _show_full_frame(parent, record: VehicleRecord):
-    """Popup showing the full source frame with the bounding box drawn."""
-    from PIL import Image, ImageDraw, ImageTk
+    """Popup showing the full source frame with the bounding box drawn.
 
-    img = Image.open(record.frame_path).convert("RGB")
-    draw = ImageDraw.Draw(img)
-    draw.rectangle(record.bbox, outline=(255, 0, 0), width=4)
-    # Scale down large frames to fit typical screens.
-    max_side = 900
-    scale = min(1.0, max_side / max(img.size))
-    if scale < 1.0:
-        img = img.resize((int(img.width * scale), int(img.height * scale)))
-
-    top = tk.Toplevel(parent)
-    top.title(f"{record.point}  {os.path.basename(record.frame_path)}  "
-              f"{record.timestamp:%Y-%m-%d %H:%M:%S}")
-    photo = ImageTk.PhotoImage(img)
-    label = tk.Label(top, image=photo)
-    label.image = photo  # keep a reference
-    label.pack()
+    Uses the same scrollable, wheel-zoomable viewer the timestamp review
+    uses. It previously drew the frame once at a fixed 900px fit with no
+    zoom and no scrolling, which is the identical "can't see the detail"
+    problem ``FrameZoomDialog`` was built to solve -- and it matters more
+    here, since the reason to open a vehicle's full frame at all is usually
+    to read a plate or compare a detail against the other point.
+    """
+    FrameZoomDialog(
+        parent, record.frame_path,
+        f"{record.point}  {os.path.basename(record.frame_path)}  "
+        f"{record.timestamp:%Y-%m-%d %H:%M:%S}",
+        region=tuple(record.bbox),
+    )
 
 
 class FrameZoomDialog(tk.Toplevel):
@@ -132,7 +135,7 @@ class FrameZoomDialog(tk.Toplevel):
         # source image should open at its real size, not pre-blurred.
         self._scale = min(win_w / img.width, win_h / img.height, 1.0)
 
-        self.canvas = tk.Canvas(self, width=win_w, height=win_h, background="#202020")
+        self.canvas = tk.Canvas(self, width=win_w, height=win_h, background=theme.TEXT)
         hbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
         vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(xscrollcommand=hbar.set, yscrollcommand=vbar.set)
@@ -146,7 +149,7 @@ class FrameZoomDialog(tk.Toplevel):
         self._redraw()
 
         ttk.Label(self, text="Scroll to zoom - drag the scrollbars to pan.",
-                  font=("TkDefaultFont", 8)).grid(row=2, column=0, columnspan=2,
+                  style="Status.TLabel").grid(row=2, column=0, columnspan=2,
                                                   sticky="w", padx=4, pady=(2, 4))
 
         # Windows/macOS deliver <MouseWheel> with event.delta; X11 (Linux)
@@ -155,6 +158,11 @@ class FrameZoomDialog(tk.Toplevel):
         self.canvas.bind("<MouseWheel>", self._on_wheel)
         self.canvas.bind("<Button-4>", lambda e: self._zoom_at(e, self.WHEEL_STEP))
         self.canvas.bind("<Button-5>", lambda e: self._zoom_at(e, 1 / self.WHEEL_STEP))
+
+        # Stays above its parent instead of being lost behind the main window
+        # when the user clicks back to it. Deliberately *not* grab_set: two
+        # frames often need comparing side by side, which a modal forbids.
+        self.transient(parent)
 
     def _redraw(self):
         from PIL import Image, ImageTk
@@ -204,9 +212,10 @@ class ScrollableThumbs(ttk.Frame):
     def __init__(self, parent, columns=2):
         super().__init__(parent)
         self.columns = columns
-        self._canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        self._canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0,
+                                 background=theme.SURFACE)
         self._scroll = ttk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
-        self._inner = ttk.Frame(self._canvas)
+        self._inner = ttk.Frame(self._canvas, style="Card.TFrame")
         self._inner.bind(
             "<Configure>",
             lambda e: self._canvas.configure(scrollregion=self._canvas.bbox("all")),
@@ -216,6 +225,38 @@ class ScrollableThumbs(ttk.Frame):
         self._canvas.pack(side="left", fill="both", expand=True)
         self._scroll.pack(side="right", fill="y")
         self._refs: list = []  # keep PhotoImage refs alive
+
+        # The galleries were previously scrollable only by dragging the
+        # scrollbar -- with hundreds of cards that is the difference between
+        # browsing results and not bothering. Bound on <Enter>/<Leave> rather
+        # than globally because two of these live side by side and Tk delivers
+        # wheel events to the focused widget, not the one under the pointer:
+        # a global binding would scroll whichever gallery was last clicked
+        # regardless of where the pointer actually is.
+        self._canvas.bind("<Enter>", self._grab_wheel)
+        self._canvas.bind("<Leave>", self._release_wheel)
+
+    def _grab_wheel(self, _event=None):
+        # Windows/macOS use <MouseWheel> with a delta; X11 sends button 4/5.
+        self._canvas.bind_all("<MouseWheel>", self._on_wheel)
+        self._canvas.bind_all("<Button-4>", self._on_wheel)
+        self._canvas.bind_all("<Button-5>", self._on_wheel)
+
+    def _release_wheel(self, _event=None):
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self._canvas.unbind_all(sequence)
+
+    def _on_wheel(self, event):
+        if getattr(event, "num", None) == 4:
+            delta = -1
+        elif getattr(event, "num", None) == 5:
+            delta = 1
+        else:
+            # Windows reports multiples of 120; macOS reports small values
+            # directly, so normalise to a sign rather than dividing by 120
+            # (which floors macOS deltas to zero and scrolls nothing).
+            delta = -1 if event.delta > 0 else 1
+        self._canvas.yview_scroll(delta * 3, "units")
 
     def clear(self):
         for child in self._inner.winfo_children():
@@ -236,23 +277,25 @@ class ScrollableThumbs(ttk.Frame):
         photo = _load_thumb(record)
         self._refs.append(photo)
 
-        card = ttk.Frame(self._inner, relief="ridge", borderwidth=1, padding=3)
-        card.grid(row=idx // self.columns, column=idx % self.columns, padx=4, pady=4)
+        card = ttk.Frame(self._inner, style="Card.TFrame", padding=theme.PAD_S)
+        card.grid(row=idx // self.columns, column=idx % self.columns,
+                  padx=theme.PAD_S, pady=theme.PAD_S)
 
-        btn = tk.Label(card, image=photo, cursor="hand2")
+        btn = tk.Label(card, image=photo, cursor="hand2", background=theme.SURFACE,
+                       borderwidth=0, highlightthickness=0)
         btn.pack()
         btn.bind("<Button-1>", lambda e: on_click(record))
         btn.bind("<Double-Button-1>", lambda e: on_double(record))
 
-        ttk.Label(card, text=caption, font=("TkDefaultFont", 8)).pack()
+        ttk.Label(card, text=caption, style="Caption.TLabel").pack(anchor="w")
         if subcaption:
-            ttk.Label(card, text=subcaption, font=("TkDefaultFont", 7),
-                      foreground="#666666").pack()
+            ttk.Label(card, text=subcaption, style="Caption.TLabel",
+                      foreground=theme.NEUTRAL).pack(anchor="w")
 
         if on_confirm or on_reject:
-            row = ttk.Frame(card)
-            row.pack(fill="x")
-            status_lbl = ttk.Label(card, text="", font=("TkDefaultFont", 7))
+            row = ttk.Frame(card, style="Card.TFrame")
+            row.pack(fill="x", pady=(theme.PAD_S, 0))
+            status_lbl = ttk.Label(card, text="", style="Caption.TLabel")
             confirm_btn = ttk.Button(row, text="✓ Same", width=6)
             reject_btn = ttk.Button(row, text="✗ Diff", width=6)
 
@@ -278,7 +321,7 @@ class ScrollableThumbs(ttk.Frame):
 
 class ReIDApp(ttk.Frame):
     def __init__(self, master):
-        super().__init__(master, padding=8)
+        super().__init__(master, padding=theme.PAD_L)
         self.pack(fill="both", expand=True)
 
         # Detection model: keep a display<->key mapping so the combobox can show
@@ -321,6 +364,13 @@ class ReIDApp(ttk.Frame):
         self.ocr_time_pattern = tk.StringVar(value=saved.get("ocr_time_pattern", ""))
         self.last_video_dir = tk.StringVar(value=saved.get("last_video_dir", ""))
         self.status = tk.StringVar(value="Select folders for point A and B, then Process.")
+        # Per-point timestamp state ("no review yet" / "N times confirmed"),
+        # refreshed whenever a folder path changes. See _refresh_time_status.
+        self.time_status = {"A": tk.StringVar(), "B": tk.StringVar()}
+        self._time_labels: dict[str, ttk.Label] = {}
+        # Pending _rematch callback id, so a slider drag coalesces into one
+        # rebuild instead of one per motion event -- see _rematch.
+        self._rematch_job = None
 
         self._res_a = None
         self._res_b = None
@@ -342,75 +392,149 @@ class ReIDApp(ttk.Frame):
     # --- UI construction ---------------------------------------------------
 
     def _build_controls(self):
-        top = ttk.Frame(self)
-        top.pack(fill="x", pady=(0, 6))
+        """Three numbered cards -- frames, timestamps + model, matching.
 
-        # Folder pickers (with an "extract frames from a video" shortcut)
-        for label, var, pt in (("Point A folder", self.dir_a, "A"),
-                               ("Point B folder", self.dir_b, "B")):
-            row = ttk.Frame(top)
-            row.pack(fill="x", pady=2)
-            ttk.Label(row, text=label, width=14).pack(side="left")
-            ttk.Entry(row, textvariable=var).pack(side="left", fill="x", expand=True, padx=4)
+        Previously one flat stack of eight equally-weighted rows, which gave
+        no clue that the folder pickers must come first, that "Fix times"
+        belongs *before* Process rather than being an optional extra, or that
+        the sliders re-filter existing results rather than feeding the run.
+        Grouping them into steps is what makes that order readable, and is
+        what the design doc's card + section-heading pattern is for.
+        """
+        top = ttk.Frame(self)
+        top.pack(fill="x", pady=(0, theme.PAD_M))
+
+        # --- Step 1: the frames themselves ---------------------------------
+        step1 = theme.card(top)
+        step1.pack(fill="x", pady=(0, theme.PAD_M))
+        theme.section_header(
+            step1, "STEP 1", "Frames",
+            "Point a folder of extracted frames at each camera position, or "
+            "pull them straight out of a video.")
+
+        for label, var, pt in (("Point A", self.dir_a, "A"),
+                               ("Point B", self.dir_b, "B")):
+            row = ttk.Frame(step1, style="Card.TFrame")
+            row.pack(fill="x", pady=(0, theme.PAD_S))
+            ttk.Label(row, text=label, width=9, style="Card.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=var).pack(
+                side="left", fill="x", expand=True, padx=(0, theme.PAD_M))
+            # Typing or pasting a path counts as choosing a folder just as
+            # much as Browse does, so the timestamp line has to follow the
+            # variable rather than the button -- a trace catches both.
+            var.trace_add("write", lambda *_a, p=pt: self._refresh_time_status(p))
             ttk.Button(row, text="Browse...",
                        command=lambda v=var: self._browse(v)).pack(side="left")
             ttk.Button(row, text="From video...",
-                       command=lambda v=var, p=pt: self._extract_from_video(v, p)).pack(side="left", padx=(4, 0))
+                       command=lambda v=var, p=pt: self._extract_from_video(v, p)
+                       ).pack(side="left", padx=(theme.PAD_S, 0))
+
+        # --- Step 2: timestamps + how it runs ------------------------------
+        step2 = theme.card(top)
+        step2.pack(fill="x", pady=(0, theme.PAD_M))
+        theme.section_header(
+            step2, "STEP 2", "Timestamps and model",
+            "Matching is gated on travel time, so the clock has to be right "
+            "before Process. Each point's current state is shown below.")
+
+        for label, var, pt in (("Point A", self.dir_a, "A"),
+                               ("Point B", self.dir_b, "B")):
+            row = ttk.Frame(step2, style="Card.TFrame")
+            row.pack(fill="x", pady=(0, theme.PAD_S))
+            ttk.Label(row, text=label, width=9, style="Card.TLabel").pack(side="left")
             btn = ttk.Button(row, text="Fix times...")
             btn.config(command=lambda v=var, p=pt, b=btn: self._fix_times(v, p, b))
-            btn.pack(side="left", padx=(4, 0))
+            btn.pack(side="left")
+            lbl = ttk.Label(row, textvariable=self.time_status[pt], style="Muted.TLabel",
+                            wraplength=560, justify="left")
+            lbl.pack(side="left", padx=(theme.PAD_M, 0), fill="x", expand=True)
+            self._time_labels[pt] = lbl
+            self._refresh_time_status(pt)
 
-        # Detection model picker + manager
-        mrow = ttk.Frame(top)
-        mrow.pack(fill="x", pady=2)
-        ttk.Label(mrow, text="Detection model", width=14).pack(side="left")
+        mrow = ttk.Frame(step2, style="Card.TFrame")
+        mrow.pack(fill="x", pady=(theme.PAD_S, 0))
+        ttk.Label(mrow, text="Model", width=9, style="Card.TLabel").pack(side="left")
         self._model_combo = ttk.Combobox(
             mrow, textvariable=self.model_display, state="readonly",
             values=[m.display_name for m in model_registry.all_models()])
-        self._model_combo.pack(side="left", fill="x", expand=True, padx=4)
+        self._model_combo.pack(side="left", fill="x", expand=True, padx=(0, theme.PAD_M))
         self._model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
-        ttk.Button(mrow, text="Manage models...",
-                   command=self._open_model_manager).pack(side="left")
         self.model_status = tk.StringVar()
-        ttk.Label(mrow, textvariable=self.model_status, width=14,
-                  font=("TkDefaultFont", 8)).pack(side="left", padx=(6, 0))
+        ttk.Label(mrow, textvariable=self.model_status, width=16,
+                  style="Muted.TLabel").pack(side="left")
+        ttk.Button(mrow, text="Manage models...",
+                   command=self._open_model_manager).pack(side="left", padx=(theme.PAD_S, 0))
         self._refresh_model_status()
 
         # Compute device: "auto" resolves to CUDA if a GPU is present, else
         # CPU. Probing CUDA touches torch, so it's deferred to a background
         # thread rather than blocking window construction.
-        drow = ttk.Frame(top)
-        drow.pack(fill="x", pady=2)
-        ttk.Label(drow, text="Device", width=14).pack(side="left")
+        drow = ttk.Frame(step2, style="Card.TFrame")
+        drow.pack(fill="x", pady=(theme.PAD_S, 0))
+        ttk.Label(drow, text="Device", width=9, style="Card.TLabel").pack(side="left")
         self._device_combo = ttk.Combobox(
             drow, textvariable=self.device, state="readonly", values=["auto"], width=10)
-        self._device_combo.pack(side="left", padx=4)
+        self._device_combo.pack(side="left", padx=(0, theme.PAD_M))
         self.device_status = tk.StringVar(value="probing...")
         # wraplength so a long GPU name ("CUDA (NVIDIA GeForce RTX 4060
         # Laptop GPU)") wraps onto a second line instead of running past the
         # window's edge with no way to see the rest of it.
-        ttk.Label(drow, textvariable=self.device_status, font=("TkDefaultFont", 8),
-                  wraplength=420, justify="left").pack(side="left", padx=(6, 0), fill="x", expand=True)
+        ttk.Label(drow, textvariable=self.device_status, style="Muted.TLabel",
+                  wraplength=560, justify="left").pack(side="left", fill="x", expand=True)
         self._probe_devices()
 
-        # Sliders / options
-        opts = ttk.Frame(top)
-        opts.pack(fill="x", pady=4)
+        # --- Step 3: matching ----------------------------------------------
+        step3 = theme.card(top)
+        step3.pack(fill="x")
+        theme.section_header(
+            step3, "STEP 3", "Match",
+            "These re-filter an existing run instantly; only \"Detect conf\" "
+            "needs another Process to take effect.")
+
+        opts = ttk.Frame(step3, style="Card.TFrame")
+        opts.pack(fill="x")
         self._add_slider(opts, "Similarity", self.threshold, 0.0, 1.0)
         self._add_slider(opts, "Detect conf", self.det_conf, 0.05, 0.9)
         self._add_slider(opts, "Min travel (s)", self.min_travel, 0.0, 1800.0)
         self._add_slider(opts, "Max travel (s)", self.max_travel, 10.0, 3600.0)
 
-        toggles = ttk.Frame(top)
-        toggles.pack(fill="x", pady=2)
+        toggles = ttk.Frame(step3, style="Card.TFrame")
+        toggles.pack(fill="x", pady=(theme.PAD_M, 0))
         ttk.Checkbutton(toggles, text="Use time gate", variable=self.use_gate,
-                        command=self._rematch).pack(side="left", padx=4)
+                        command=self._rematch).pack(side="left", padx=(0, theme.PAD_L))
         ttk.Checkbutton(toggles, text="One-to-one", variable=self.one_to_one,
-                        command=self._rematch).pack(side="left", padx=4)
+                        command=self._rematch).pack(side="left", padx=(0, theme.PAD_L))
         ttk.Checkbutton(toggles, text="Group repeat sightings (slow)",
-                        variable=self.cluster_same_point).pack(side="left", padx=4)
-        self._process_btn = ttk.Button(toggles, text="Process", command=self._on_process)
-        self._process_btn.pack(side="right", padx=4)
+                        variable=self.cluster_same_point).pack(side="left")
+        # The one filled indigo button in the window: the design doc allows a
+        # single primary action per view section, and this is the action every
+        # other control here leads up to.
+        self._process_btn = ttk.Button(toggles, text="Process",
+                                       style="Accent.TButton", command=self._on_process)
+        self._process_btn.pack(side="right")
+
+    def _refresh_time_status(self, point: str):
+        """Repaint one point's timestamp line from its folder's sidecar.
+
+        Runs on every keystroke in the folder entry (via the variable trace),
+        so it stays cheap -- metadata only, never the per-frame map -- and
+        never raises: a half-typed path is the normal case here, not an error.
+        """
+        var = self.dir_a if point == "A" else self.dir_b
+        folder = var.get().strip()
+        if not folder or not os.path.isdir(folder):
+            level, text = "none", "pick a folder first"
+        else:
+            try:
+                level, text = timestamp_ocr.describe_sidecar(folder)
+            except Exception:
+                log.debug("Could not describe sidecar for %s", folder, exc_info=True)
+                level, text = "none", "could not read this folder's timestamps"
+        self.time_status[point].set(text)
+        label = self._time_labels.get(point)
+        if label is not None:
+            label.config(style={"ok": "Success.TLabel",
+                                "warn": "Warning.TLabel"}.get(level, "Muted.TLabel"))
 
     def _build_status_bar(self):
         """Bottom-anchored status + resource bar.
@@ -425,12 +549,19 @@ class ReIDApp(ttk.Frame):
         the controls and the galleries).
         """
         bar = ttk.Frame(self)
-        bar.pack(side="bottom", fill="x", pady=(4, 0))
-        ttk.Label(bar, textvariable=self.status, relief="sunken",
+        bar.pack(side="bottom", fill="x", pady=(theme.PAD_M, 0))
+        ttk.Separator(bar, orient="horizontal").pack(fill="x", pady=(0, theme.PAD_S))
+        line = ttk.Frame(bar)
+        line.pack(fill="x")
+        # A 1px rule above, rather than the old sunken 3D bevel: the design
+        # doc's dividers are a single recessive border, and "sunken" is the
+        # one relief clam draws with a light/dark bevel pair that no palette
+        # colour can flatten.
+        ttk.Label(line, textvariable=self.status, style="Status.TLabel",
                   anchor="w").pack(side="left", fill="x", expand=True)
         self.resource_status = tk.StringVar(value="")
-        ttk.Label(bar, textvariable=self.resource_status, relief="sunken",
-                  anchor="e", font=("TkDefaultFont", 8)).pack(side="right")
+        ttk.Label(line, textvariable=self.resource_status, style="StatusCode.TLabel",
+                  anchor="e").pack(side="right", padx=(theme.PAD_L, 0))
         self._poll_resources()
 
     def _poll_resources(self):
@@ -445,12 +576,12 @@ class ReIDApp(ttk.Frame):
         self.after(config.RESOURCE_POLL_MS, self._poll_resources)
 
     def _add_slider(self, parent, label, var, lo, hi):
-        frame = ttk.Frame(parent)
-        frame.pack(side="left", fill="x", expand=True, padx=4)
-        head = ttk.Frame(frame)
+        frame = ttk.Frame(parent, style="Card.TFrame")
+        frame.pack(side="left", fill="x", expand=True, padx=(0, theme.PAD_L))
+        head = ttk.Frame(frame, style="Card.TFrame")
         head.pack(fill="x")
-        ttk.Label(head, text=label, font=("TkDefaultFont", 8)).pack(side="left")
-        val = ttk.Label(head, font=("TkDefaultFont", 8))
+        ttk.Label(head, text=label, style="Caption.TLabel").pack(side="left")
+        val = ttk.Label(head, style="Value.TLabel")
         val.pack(side="right")
 
         def _on_move(_=None):
@@ -466,21 +597,30 @@ class ReIDApp(ttk.Frame):
         panes = ttk.Panedwindow(self, orient="horizontal")
         panes.pack(fill="both", expand=True)
 
-        left = ttk.Labelframe(panes, text="Point A vehicles (click one)")
-        right = ttk.Labelframe(panes, text="Point B vehicles")
+        left = ttk.Labelframe(panes, text="POINT A - CLICK A VEHICLE", padding=theme.PAD_S)
+        right = ttk.Labelframe(panes, text="POINT B", padding=theme.PAD_S)
         panes.add(left, weight=1)
         panes.add(right, weight=1)
+
+        # Header line mirroring point B's: this is where the gallery cap is
+        # now reported, so it no longer has to fight the shared status bar
+        # for the same line of text.
+        a_toolbar = ttk.Frame(left, style="Card.TFrame")
+        a_toolbar.pack(fill="x", pady=(0, theme.PAD_S))
+        self.a_view_label = tk.StringVar(value="No results yet - run Process")
+        ttk.Label(a_toolbar, textvariable=self.a_view_label,
+                  style="Muted.TLabel").pack(side="left")
 
         self.gallery_a = ScrollableThumbs(left, columns=2)
         self.gallery_a.pack(fill="both", expand=True)
 
-        b_toolbar = ttk.Frame(right)
-        b_toolbar.pack(fill="x")
+        b_toolbar = ttk.Frame(right, style="Card.TFrame")
+        b_toolbar.pack(fill="x", pady=(0, theme.PAD_S))
         self.b_view_label = tk.StringVar(value="Showing: all point B vehicles")
         ttk.Label(b_toolbar, textvariable=self.b_view_label,
-                 font=("TkDefaultFont", 8)).pack(side="left", padx=4)
-        ttk.Button(b_toolbar, text="Show all B",
-                  command=self._show_all_b).pack(side="right", padx=4)
+                  style="Muted.TLabel").pack(side="left")
+        ttk.Button(b_toolbar, text="Show all B", style="Ghost.TButton",
+                   command=self._show_all_b).pack(side="right")
 
         self.gallery_b = ScrollableThumbs(right, columns=2)
         self.gallery_b.pack(fill="both", expand=True)
@@ -669,7 +809,8 @@ class ReIDApp(ttk.Frame):
     def _on_process(self):
         dir_a, dir_b = self.dir_a.get().strip(), self.dir_b.get().strip()
         if not os.path.isdir(dir_a) or not os.path.isdir(dir_b):
-            messagebox.showerror("Invalid folders", "Please choose valid A and B folders.")
+            messagebox.showerror("Invalid folders", "Please choose valid A and B folders.",
+                                 parent=self)
             return
         self._process_btn.config(state="disabled")
         self.status.set("Loading models and processing frames... (first run downloads weights)")
@@ -727,7 +868,7 @@ class ReIDApp(ttk.Frame):
                 elif kind == "error":
                     self._process_btn.config(state="normal")
                     self.status.set("Error.")
-                    messagebox.showerror("Processing failed", payload)
+                    messagebox.showerror("Processing failed", payload, parent=self)
                     return
                 elif kind == "done":
                     self._on_processed(*payload)
@@ -748,13 +889,19 @@ class ReIDApp(ttk.Frame):
         self._a_cluster_sizes = Counter(a_clusters.values())
         self._b_cluster_sizes = Counter(b_clusters.values())
         self._process_btn.config(state="normal")
-        self.status.set(
-            f"A: {len(res_a.records)} vehicles / {res_a.frame_count} frames   |   "
-            f"B: {len(res_b.records)} vehicles / {res_b.frame_count} frames"
-        )
         self._populate_a()
         self._last_selected_a = None
         self._populate_b_all()
+        # Set *after* the galleries repopulate, not before: _populate_a used
+        # to overwrite this line with its own "showing first N of M" message
+        # whenever the gallery cap kicked in -- which is every real gallery --
+        # so the vehicle counts were only ever visible on toy folders. The
+        # cap is now reported by each gallery's own header instead.
+        self.status.set(
+            f"A: {len(res_a.records)} vehicles / {res_a.frame_count} frames   |   "
+            f"B: {len(res_b.records)} vehicles / {res_b.frame_count} frames   |   "
+            f"click a point A vehicle to see its matches"
+        )
         self._save_settings()
 
     def _collect_settings(self) -> dict:
@@ -813,6 +960,7 @@ class ReIDApp(ttk.Frame):
     def _populate_a(self):
         self.gallery_a.clear()
         if not self._res_a:
+            self.a_view_label.set("No results yet - run Process")
             return
         records = self._res_a.records
         shown = records[: config.DEFAULT_MAX_GALLERY_THUMBNAILS]
@@ -821,12 +969,15 @@ class ReIDApp(ttk.Frame):
             cap += self._cluster_tag(self._a_clusters, self._a_cluster_sizes, rec.record_id)
             self.gallery_a.add_card(rec, cap, self._on_select_a, self._on_double,
                                     subcaption=self._subcaption(rec))
+        # Reported on this panel's own header rather than the shared status
+        # bar, which _on_processed needs for the run summary. Every vehicle is
+        # still matched -- the cap only limits how many cards are drawn.
         if len(shown) < len(records):
-            self.status.set(
-                f"Point A: showing first {len(shown)} of {len(records)} vehicles "
-                f"(earliest by time) -- narrowing the gallery isn't needed to match, "
-                f"only to browse it."
-            )
+            self.a_view_label.set(
+                f"Showing first {len(shown)} of {len(records)} vehicles "
+                f"(earliest first; all {len(records)} are still matched)")
+        else:
+            self.a_view_label.set(f"Showing all {len(records)} vehicles")
 
     def _show_all_b(self):
         self._last_selected_a = None
@@ -901,11 +1052,34 @@ class ReIDApp(ttk.Frame):
     def _on_double(self, rec: VehicleRecord):
         _show_full_frame(self, rec)
 
+    REMATCH_DELAY_MS = 200
+
     def _rematch(self):
-        # Re-run matching for the currently selected A vehicle when a slider or
-        # toggle changes. No model work involved -- purely numeric, so instant.
+        """Refresh the B panel for the selected A vehicle, coalesced.
+
+        The matching itself is purely numeric and instant, but repainting the
+        panel reloads every candidate card -- and each card decodes its full
+        source frame from disk to crop a thumbnail. ``ttk.Scale`` fires its
+        command on *every* motion event, so dragging a slider one inch used
+        to queue dozens of rebuilds, each one several full-resolution JPEG
+        decodes, and the window locked up until the drag was digested.
+
+        Deferring through ``after`` and cancelling the pending call collapses
+        a whole drag into a single rebuild once the pointer settles. The delay
+        is short enough to still feel like live feedback on a click or a
+        keyboard nudge, which is why the sliders are worth having at all.
+        """
+        if self._rematch_job is not None:
+            self.after_cancel(self._rematch_job)
+            self._rematch_job = None
         # If nothing is selected (the "all B" default view), there is nothing
         # threshold-dependent to refresh.
+        if self._last_selected_a is None or self._res_b is None:
+            return
+        self._rematch_job = self.after(self.REMATCH_DELAY_MS, self._rematch_now)
+
+    def _rematch_now(self):
+        self._rematch_job = None
         if self._last_selected_a is not None and self._res_b is not None:
             self._on_select_a(self._last_selected_a)
 
@@ -982,7 +1156,8 @@ class VideoExtractDialog(tk.Toplevel):
         ttk.Spinbox(irow, from_=0.1, to=60.0, increment=0.5, textvariable=self.interval,
                     width=8).pack(side="left")
 
-        ttk.Label(self, textvariable=self.status, relief="sunken", anchor="w").pack(fill="x", **pad)
+        ttk.Label(self, textvariable=self.status, style="Status.TLabel",
+                  anchor="w").pack(fill="x", **pad)
 
         brow = ttk.Frame(self)
         brow.pack(fill="x", **pad)
@@ -1158,7 +1333,7 @@ class ModelManagerDialog(tk.Toplevel):
                   f"{model_manager.default_models_dir()}.\n"
                   f"ultralytics {model_manager.ultralytics_version() or 'not installed'} "
                   "— upgrade the package then Update for newer weights."),
-            justify="left", font=("TkDefaultFont", 8), padding=(8, 6, 8, 0))
+            justify="left", style="Status.TLabel", padding=(8, 6, 8, 0))
         info.pack(fill="x")
 
         tree_frame = ttk.Frame(self, padding=8)
@@ -1180,7 +1355,7 @@ class ModelManagerDialog(tk.Toplevel):
         self.tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
-        ttk.Label(self, textvariable=self.status, relief="sunken", anchor="w",
+        ttk.Label(self, textvariable=self.status, style="Status.TLabel", anchor="w",
                   padding=4).pack(fill="x", padx=8)
 
         btns = ttk.Frame(self, padding=8)
@@ -1487,11 +1662,11 @@ class TimelineReviewDialog(tk.Toplevel):
     def _build(self):
         pad = {"padx": 8, "pady": 4}
 
-        ttk.Label(self, textvariable=self.header, font=("TkDefaultFont", 9, "bold")
-                  ).pack(anchor="w", **pad)
+        ttk.Label(self, textvariable=self.header, style="Section.TLabel",
+                  background=theme.BACKGROUND).pack(anchor="w", **pad)
         ttk.Label(self, textvariable=self.summary).pack(anchor="w", **pad)
         self._warn_label = ttk.Label(self, textvariable=self.warnings,
-                                     foreground="#b00000", wraplength=1140, justify="left")
+                                     foreground=theme.ERROR, wraplength=1140, justify="left")
         self._warn_label.pack(anchor="w", **pad)
 
         # The one place a time pattern is picked, typed, saved or managed --
@@ -1525,7 +1700,7 @@ class TimelineReviewDialog(tk.Toplevel):
                 ("worst", "Worst", 90), ("offset", "Manual offset", 110)):
             self.clips_tree.heading(col, text=title)
             self.clips_tree.column(col, width=width, anchor="w")
-        self.clips_tree.tag_configure("borrowed", foreground="#b06000")
+        self.clips_tree.tag_configure("borrowed", foreground=theme.WARNING)
         self.clips_tree.pack(fill="x", padx=4, pady=4)
 
         nudge = ttk.Frame(clips_frame)
@@ -1553,9 +1728,9 @@ class TimelineReviewDialog(tk.Toplevel):
                 ("residual", "Off by", 70), ("in", "Used", 50)):
             self.samples_tree.heading(col, text=title)
             self.samples_tree.column(col, width=width, anchor="w")
-        self.samples_tree.tag_configure("outlier", foreground="#b00000")
-        self.samples_tree.tag_configure("edited", foreground="#0050b0")
-        self.samples_tree.tag_configure("unread", foreground="#909090")
+        self.samples_tree.tag_configure("outlier", foreground=theme.ERROR)
+        self.samples_tree.tag_configure("edited", foreground=theme.PRIMARY)
+        self.samples_tree.tag_configure("unread", foreground=theme.NEUTRAL)
         self.samples_tree.bind("<<TreeviewSelect>>", self._on_select_sample)
         # grid rather than pack, so a horizontal scrollbar can sit under the
         # tree: the columns' combined width (OCR text, filename/read clocks,
@@ -1582,7 +1757,7 @@ class TimelineReviewDialog(tk.Toplevel):
                                     state="disabled")
         self._zoom_btn.pack(padx=6, pady=(2, 6))
         ttk.Label(detail, textvariable=self.detail_caption, wraplength=380,
-                  justify="left", font=("TkDefaultFont", 8)).pack(anchor="w", padx=6)
+                  justify="left", style="Muted.TLabel").pack(anchor="w", padx=6)
 
         ttk.Label(detail, text="Readings the OCR considered:").pack(anchor="w", padx=6, pady=(8, 0))
         self.candidate_combo = ttk.Combobox(detail, state="readonly", width=52)
@@ -1953,6 +2128,12 @@ class TimelineReviewDialog(tk.Toplevel):
         self._app.status.set(
             f"Point {self.point}: wrote {len(frames)} timestamp(s). "
             f"Click Process again to use the corrected times.")
+        # Repaint the main window's step-2 line for this point -- the sidecar
+        # it reads has just changed, and nothing else would trigger a refresh
+        # (the folder path is unchanged, so its trace does not fire).
+        refresh = getattr(self._app, "_refresh_time_status", None)
+        if refresh is not None:
+            refresh(self.point)
         messagebox.showinfo(
             "Times written",
             f"Wrote {len(frames)} timestamp(s) for point {self.point}.\n\n"
@@ -2007,6 +2188,9 @@ class TimelineReviewDialog(tk.Toplevel):
                         self._app.status.set(
                             f"Point {self.point}: read {payload}/{len(names)} timestamp(s). "
                             f"Click Process again to use the corrected times.")
+                        refresh = getattr(self._app, "_refresh_time_status", None)
+                        if refresh is not None:
+                            refresh(self.point)
                         messagebox.showinfo(
                             "OCR complete",
                             f"Read {payload}/{len(names)} timestamp(s).", parent=self)
@@ -2116,7 +2300,11 @@ def main():
     log_path = logging_setup.setup_logging()
     root = tk.Tk()
     root.title("Match-Vehicle-AI  |  Cross-Point Vehicle Re-ID")
-    root.geometry("1100x760")
+    # Before any widget is built: theme.apply swaps the ttk theme to clam and
+    # restyles the named default fonts, and widgets created beforehand would
+    # keep the old metrics until they were next reconfigured.
+    theme.apply(root)
+    root.geometry("1180x820")
     # Below this, the control rows (folder pickers, device/model status) no
     # longer have room to lay out without their text running past the
     # window's edge -- resizing smaller should shrink the galleries, not

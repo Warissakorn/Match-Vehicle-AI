@@ -233,25 +233,43 @@ download on first use).
 python app/gui.py          # or just ./run.sh
 ```
 
-1. Browse to the **Point A** and **Point B** frame folders — or click
-   **From video...** to extract frames from a video first, and optionally
-   **Fix times (OCR)...** if the footage has an on-screen clock (see above).
-2. Pick a **Detection model** from the dropdown (or click **Manage models...**
-   to download / update weights). Pick a **Device** (Auto / CPU / CUDA —
-   Auto uses a GPU when one's available). Tune sliders if needed (similarity
-   threshold, detection confidence, travel window).
-3. Click **Process**. First run downloads the models. The right panel starts by
-   showing every vehicle detected at point B — useful for browsing before
-   you've picked anything from A ("Show all B" returns to this view any time).
-   Galleries cap at `config.DEFAULT_MAX_GALLERY_THUMBNAILS` (300 by default,
-   earliest by time) since real footage can produce thousands of vehicles per
-   point and rendering a thumbnail for every one would freeze the window; the
-   status bar says so when a gallery is truncated. Matching against an A
-   vehicle is unaffected — it isn't limited to what's currently rendered.
-4. Click a vehicle in the A gallery → its best B-matches appear on the right
-   instead, with similarity scores. Click **✓ Same** / **✗ Diff** on a candidate
-   to label it as training data (saved under `training_data/`, see below).
-   Double-click any thumbnail to view the full frame with the bounding box.
+The window is laid out as the three steps the workflow actually has, in order:
+
+**Step 1 — Frames.** Browse to the **Point A** and **Point B** frame folders, or
+click **From video...** to extract frames from a video first.
+
+**Step 2 — Timestamps and model.** Each point shows a one-line summary of where
+its times currently come from — `no timestamp review yet - times come from
+filenames`, or e.g. `12557 frame time(s) confirmed from a fitted clock, 29.97
+fps`. Green means reviewed and confirmed, amber means fitted but not confirmed
+(or the fit raised warnings), grey means nothing has been done yet. Click
+**Fix times...** to open the review (see above) if the footage has an on-screen
+clock. This line matters because matching is gated on travel time: with wrong
+clocks, Process runs to completion and quietly finds nothing. Also here: the
+**Detection model** dropdown (**Manage models...** downloads / updates weights)
+and the **Device** picker (Auto / CPU / CUDA — Auto uses a GPU when one is
+available).
+
+**Step 3 — Match.** Tune the similarity threshold and travel window, then click
+**Process**. First run downloads the models. Everything in this step except
+**Detect conf** re-filters an existing run instantly; detection confidence
+changes what gets detected at all, so it needs another Process.
+
+After a run, the right panel starts by showing every vehicle detected at point B
+— useful for browsing before you've picked anything from A ("Show all B" returns
+to this view any time). Galleries cap at `config.DEFAULT_MAX_GALLERY_THUMBNAILS`
+(300 by default, earliest by time) since real footage can produce thousands of
+vehicles per point and rendering a thumbnail for every one would freeze the
+window; each gallery's own header says so when it is truncated. Matching against
+an A vehicle is unaffected — it isn't limited to what's currently rendered.
+
+Click a vehicle in the A gallery → its best B-matches appear on the right, with
+similarity scores. Click **✓ Same** / **✗ Diff** on a candidate to label it as
+training data (saved under `training_data/`, see below). Double-click any
+thumbnail to open the full frame in the same scrollable, mouse-wheel-zoomable
+viewer the timestamp review uses, with the vehicle's box outlined — enough to
+read a plate rather than just confirm a shape. Both galleries scroll with the
+mouse wheel.
 
 Every thumbnail shows a second, smaller caption line with its source frame's
 filename and where its timestamp came from (`[ocr]`/`[filename]`/`[exif]`/
@@ -262,7 +280,17 @@ Vehicles seen more than once at the *same* point (e.g. a car circling back past
 the same camera) are tagged `•GrpN(xK)` in their caption — every detection is
 still shown, the tag just flags that they're believed to be one vehicle.
 
-Slider and toggle changes re-match instantly (no re-detection needed).
+Slider and toggle changes re-match instantly (no re-detection needed). Dragging
+a slider coalesces into a single refresh once the pointer settles, so a drag
+across the track costs one gallery rebuild rather than one per pixel of travel.
+
+The window's look follows `app/theme.py`, which ports the design system in
+`genesisDESIGN_1.md` onto ttk: its palette, type scale, 4px spacing grid, 1px
+borders, and the rule that only one filled indigo button (**Process**) appears
+per view. What could not be ported is documented at the top of that file —
+rounded corners, shadows and backdrop blur have no Tk equivalent, and the
+document's web fonts (General Sans / DM Sans / JetBrains Mono) are used when
+installed and substituted with the closest system faces otherwise.
 
 The bottom bar shows CPU/RAM/GPU usage alongside the status text (each field
 reads "n/a" if its dependency or a GPU isn't present) — useful for telling
