@@ -34,7 +34,8 @@ class VehicleRecord:
     bbox: tuple[int, int, int, int]
     confidence: float
     embedding: np.ndarray   # (dim,) L2-normalized
-    # Where ``timestamp`` came from: "ocr" | "filename" | "exif" | "mtime".
+    # Where ``timestamp`` came from: "timeline" | "ocr" | "filename" |
+    # "exif" | "mtime".
     # Defaulted so records pickled before this field existed still unpickle.
     timestamp_source: str = "unknown"
 

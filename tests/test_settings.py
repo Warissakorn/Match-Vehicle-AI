@@ -122,3 +122,42 @@ def test_default_path_is_next_to_config():
     assert os.path.basename(path) == "settings.json"
     import config
     assert os.path.dirname(path) == os.path.dirname(os.path.abspath(config.__file__))
+
+
+# --- int-typed keys (added for timeline_samples) -----------------------------
+# bool is a subclass of int in Python, so an int-typed key needs the same
+# explicit guard the float branch already has -- in the other direction.
+
+def test_int_key_round_trips(tmp_path):
+    path = str(tmp_path / "settings.json")
+    settings.save({"timeline_samples": 40}, path)
+    assert settings.load(path) == {"timeline_samples": 40}
+
+
+def test_int_key_rejects_bool(tmp_path):
+    path = str(tmp_path / "settings.json")
+    with open(path, "w") as fh:
+        json.dump({"timeline_samples": True}, fh)
+    assert settings.load(path) == {}
+
+
+def test_int_key_rejects_string(tmp_path):
+    path = str(tmp_path / "settings.json")
+    with open(path, "w") as fh:
+        json.dump({"timeline_samples": "40"}, fh)
+    assert settings.load(path) == {}
+
+
+def test_int_key_rejects_float(tmp_path):
+    # Unlike float keys (which widen an int), an int key must not silently
+    # truncate a fractional value.
+    path = str(tmp_path / "settings.json")
+    with open(path, "w") as fh:
+        json.dump({"timeline_samples": 40.5}, fh)
+    assert settings.load(path) == {}
+
+
+def test_cluster_toggle_round_trips(tmp_path):
+    path = str(tmp_path / "settings.json")
+    settings.save({"cluster_same_point": True}, path)
+    assert settings.load(path) == {"cluster_same_point": True}

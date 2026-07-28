@@ -36,7 +36,7 @@ class Frame:
     path: str
     timestamp: datetime
     point: str  # "A" or "B"
-    timestamp_source: str  # "filename" | "exif" | "mtime"
+    timestamp_source: str  # "timeline" | "ocr" | "filename" | "exif" | "mtime"
 
     @property
     def name(self) -> str:
@@ -83,7 +83,8 @@ def _parse_timestamp_from_exif(path: str) -> datetime | None:
     return None
 
 
-def parse_timestamp(path: str, ocr_timestamps: dict[str, datetime] | None = None) -> tuple[datetime, str]:
+def parse_timestamp(path: str, ocr_timestamps: dict[str, datetime] | None = None,
+                    ocr_source: str = "ocr") -> tuple[datetime, str]:
     """Resolve a timestamp for ``path``, returning (timestamp, source).
 
     ``ocr_timestamps`` is the folder's OCR sidecar (see
@@ -91,11 +92,15 @@ def parse_timestamp(path: str, ocr_timestamps: dict[str, datetime] | None = None
     has an entry for this file, that wins over every other source, since it
     reflects the clock actually burned into the footage rather than an
     assumption derived from a filename or file metadata.
+
+    ``ocr_source`` labels where those sidecar times came from: ``"timeline"``
+    for a reviewed line fit, ``"ocr"`` for the older read-every-frame pass.
+    It defaults to ``"ocr"`` so existing callers keep their behaviour.
     """
     if ocr_timestamps:
         ts = ocr_timestamps.get(os.path.basename(path))
         if ts is not None:
-            return ts, "ocr"
+            return ts, ocr_source
 
     ts = parse_timestamp_from_name(path)
     if ts is not None:
@@ -119,9 +124,11 @@ def load_frames(folder: str, point: str) -> list[Frame]:
     if not os.path.isdir(folder):
         raise NotADirectoryError(f"Not a directory: {folder}")
 
-    from mash_reid.timestamp_ocr import load_sidecar  # local: avoid import cost when unused
+    # local: avoid import cost when unused
+    from mash_reid.timestamp_ocr import load_sidecar, load_sidecar_source
 
     ocr_timestamps = load_sidecar(folder)
+    ocr_source = load_sidecar_source(folder) if ocr_timestamps else "ocr"
 
     frames: list[Frame] = []
     for entry in sorted(os.listdir(folder)):
@@ -131,7 +138,7 @@ def load_frames(folder: str, point: str) -> list[Frame]:
         path = os.path.join(folder, entry)
         if not os.path.isfile(path):
             continue
-        ts, source = parse_timestamp(path, ocr_timestamps)
+        ts, source = parse_timestamp(path, ocr_timestamps, ocr_source)
         frames.append(Frame(path=path, timestamp=ts, point=point, timestamp_source=source))
 
     frames.sort(key=lambda f: f.timestamp)

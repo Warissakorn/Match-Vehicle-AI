@@ -80,3 +80,34 @@ def test_load_frames_without_sidecar_falls_back_cleanly(tmp_path):
     frames = load_frames(str(tmp_path), "A")
     assert len(frames) == 1
     assert frames[0].timestamp_source == "filename"
+
+
+# --- timestamp_source reflects which sidecar wrote the times -----------------
+
+def test_timeline_sidecar_labels_frames_as_timeline(tmp_path):
+    name = "A_20260723_101530_000123.jpg"
+    (tmp_path / name).write_bytes(b"not a real image, never decoded")
+    timestamp_ocr.write_sidecar_doc(str(tmp_path), {
+        "version": 2, "source": "timeline",
+        "frames": {name: "2026-07-23T09:30:00.500000"},
+    })
+
+    frames = load_frames(str(tmp_path), "A")
+    assert len(frames) == 1
+    assert frames[0].timestamp_source == "timeline"
+    assert frames[0].timestamp == datetime(2026, 7, 23, 9, 30, 0, 500000)
+
+
+def test_legacy_sidecar_still_labels_frames_as_ocr(tmp_path):
+    name = "A_20260723_101530.jpg"
+    (tmp_path / name).write_bytes(b"not a real image")
+    timestamp_ocr._save_sidecar(str(tmp_path), {name: datetime(2026, 7, 23, 9, 0, 0)})
+
+    frames = load_frames(str(tmp_path), "A")
+    assert frames[0].timestamp_source == "ocr"
+
+
+def test_parse_timestamp_source_label_is_overridable():
+    ocr_map = {"A_20260723_101530.jpg": datetime(2026, 7, 23, 9, 0, 0)}
+    _ts, source = parse_timestamp("/d/A_20260723_101530.jpg", ocr_map, "timeline")
+    assert source == "timeline"

@@ -45,6 +45,8 @@ def _cache_key(folder: str, cfg: config.PipelineConfig) -> str:
     the pre-OCR (wrong) timestamps. The version prefix guards the reverse
     case: caches written before ``VehicleRecord.timestamp_source`` existed
     are also treated as stale rather than unpickled into the new shape.
+    Bumped to v3 when the sampled-timeline fit added the "timeline" source
+    value, so old pickles don't carry a now-wrong label.
     """
     h = hashlib.sha256()
     h.update(repr((cfg.yolo_weights, cfg.detection_conf,
@@ -60,7 +62,7 @@ def _cache_key(folder: str, cfg: config.PipelineConfig) -> str:
     if os.path.exists(sidecar):
         st = os.stat(sidecar)
         h.update(f"ocr:{st.st_size}:{int(st.st_mtime)}".encode())
-    return "v2." + h.hexdigest()[:16]
+    return "v3." + h.hexdigest()[:16]
 
 
 def process_point(

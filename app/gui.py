@@ -197,6 +197,9 @@ class ReIDApp(ttk.Frame):
         self.max_travel = tk.DoubleVar(value=saved.get("max_travel", 600.0))
         self.use_gate = tk.BooleanVar(value=saved.get("use_gate", True))
         self.one_to_one = tk.BooleanVar(value=saved.get("one_to_one", False))
+        self.cluster_same_point = tk.BooleanVar(
+            value=saved.get("cluster_same_point",
+                            config.DEFAULT_ENABLE_SAME_POINT_CLUSTERING))
         # Shared with VideoExtractDialog so the last-used interval and video
         # folder are remembered across dialog opens, not just within one.
         self.extract_interval = tk.DoubleVar(value=saved.get("extract_interval", 1.0))
@@ -209,6 +212,10 @@ class ReIDApp(ttk.Frame):
         self._b_by_id: dict[int, VehicleRecord] = {}
         self._a_clusters: dict[int, int] = {}  # record_id -> cluster id (same-point repeats)
         self._b_clusters: dict[int, int] = {}
+        # cluster id -> member count, precomputed once per Process so rendering
+        # a card is O(1) instead of scanning every record's cluster id.
+        self._a_cluster_sizes: Counter = Counter()
+        self._b_cluster_sizes: Counter = Counter()
         self._last_selected_a: VehicleRecord | None = None
         self._queue: queue.Queue = queue.Queue()
 
@@ -280,6 +287,8 @@ class ReIDApp(ttk.Frame):
                         command=self._rematch).pack(side="left", padx=4)
         ttk.Checkbutton(toggles, text="One-to-one", variable=self.one_to_one,
                         command=self._rematch).pack(side="left", padx=4)
+        ttk.Checkbutton(toggles, text="Group repeat sightings (slow)",
+                        variable=self.cluster_same_point).pack(side="left", padx=4)
         self._process_btn = ttk.Button(toggles, text="Process", command=self._on_process)
         self._process_btn.pack(side="right", padx=4)
 
@@ -500,11 +509,15 @@ class ReIDApp(ttk.Frame):
             return
         self._process_btn.config(state="disabled")
         self.status.set("Loading models and processing frames... (first run downloads weights)")
-        thread = threading.Thread(target=self._process_worker, args=(dir_a, dir_b), daemon=True)
+        # Read the Tk var here, on the main thread, and hand it to the worker
+        # as a plain bool -- worker threads must not touch Tk variables.
+        cluster = self.cluster_same_point.get()
+        thread = threading.Thread(target=self._process_worker,
+                                  args=(dir_a, dir_b, cluster), daemon=True)
         thread.start()
         self.after(100, self._poll_queue)
 
-    def _process_worker(self, dir_a, dir_b):
+    def _process_worker(self, dir_a, dir_b, cluster_same_point):
         try:
             pcfg = config.PipelineConfig(
                 yolo_weights=self.model_key.get(), detection_conf=self.det_conf.get(),
@@ -524,9 +537,18 @@ class ReIDApp(ttk.Frame):
             # off the GUI thread: with real galleries running into the
             # thousands of vehicles this is seconds of work, and would freeze
             # the window if run from the Tkinter callback instead.
-            self._queue.put(("status", "Grouping repeat sightings..."))
-            a_clusters = matcher.cluster_same_point(res_a.records)
-            b_clusters = matcher.cluster_same_point(res_b.records)
+            #
+            # Off by default (see config.DEFAULT_ENABLE_SAME_POINT_CLUSTERING):
+            # it is an N x N similarity pass per point whose result isn't
+            # cached, so on a warm cache it dominates the whole run while only
+            # affecting a caption suffix. Empty dicts disable it cleanly --
+            # _cluster_tag already renders nothing for an unknown record id.
+            a_clusters: dict[int, int] = {}
+            b_clusters: dict[int, int] = {}
+            if cluster_same_point:
+                self._queue.put(("status", "Grouping repeat sightings..."))
+                a_clusters = matcher.cluster_same_point(res_a.records)
+                b_clusters = matcher.cluster_same_point(res_b.records)
 
             self._queue.put(("done", (res_a, res_b, a_clusters, b_clusters)))
         except Exception as exc:  # surface errors to the UI thread
@@ -556,6 +578,11 @@ class ReIDApp(ttk.Frame):
         self._b_by_id = {r.record_id: r for r in res_b.records}
         self._a_clusters = a_clusters
         self._b_clusters = b_clusters
+        # Count members once here rather than rescanning per card in
+        # _cluster_tag: at 300 cards over 12,000 records that scan was 3.6M
+        # dict iterations for every gallery repopulate, on the GUI thread.
+        self._a_cluster_sizes = Counter(a_clusters.values())
+        self._b_cluster_sizes = Counter(b_clusters.values())
         self._process_btn.config(state="normal")
         self.status.set(
             f"A: {len(res_a.records)} vehicles / {res_a.frame_count} frames   |   "
@@ -590,14 +617,19 @@ class ReIDApp(ttk.Frame):
         except Exception:
             log.warning("Could not save settings", exc_info=True)
 
-    def _cluster_tag(self, clusters: dict[int, int], record_id: int) -> str:
+    def _cluster_tag(self, clusters: dict[int, int], sizes: Counter, record_id: int) -> str:
         """Return a " •GrpN(xK)" suffix when this record shares a same-point
         cluster with other detections; empty string for a singleton.
+
+        ``sizes`` is the precomputed ``Counter`` of cluster ids built in
+        ``_on_processed``. Empty ``clusters`` (clustering switched off) makes
+        this return "" for every record, which is how the feature is disabled
+        without touching any caller.
         """
         cluster_id = clusters.get(record_id)
         if cluster_id is None:
             return ""
-        size = sum(1 for c in clusters.values() if c == cluster_id)
+        size = sizes[cluster_id]
         return f"  •Grp{cluster_id}(x{size})" if size > 1 else ""
 
     def _subcaption(self, rec: VehicleRecord) -> str:
@@ -619,7 +651,7 @@ class ReIDApp(ttk.Frame):
         shown = records[: config.DEFAULT_MAX_GALLERY_THUMBNAILS]
         for rec in shown:
             cap = f"A#{rec.record_id}  {rec.timestamp:%Y-%m-%d %H:%M:%S}"
-            cap += self._cluster_tag(self._a_clusters, rec.record_id)
+            cap += self._cluster_tag(self._a_clusters, self._a_cluster_sizes, rec.record_id)
             self.gallery_a.add_card(rec, cap, self._on_select_a, self._on_double,
                                     subcaption=self._subcaption(rec))
         if len(shown) < len(records):
@@ -656,7 +688,7 @@ class ReIDApp(ttk.Frame):
             self.b_view_label.set("Showing: all point B vehicles")
         for rec in shown:
             cap = f"B#{rec.record_id}  {rec.timestamp:%Y-%m-%d %H:%M:%S}"
-            cap += self._cluster_tag(self._b_clusters, rec.record_id)
+            cap += self._cluster_tag(self._b_clusters, self._b_cluster_sizes, rec.record_id)
             self.gallery_b.add_card(rec, cap, lambda r: None, self._on_double,
                                     subcaption=self._subcaption(rec))
 
@@ -676,7 +708,7 @@ class ReIDApp(ttk.Frame):
             rec_b = self._b_by_id[cand.b_record_id]
             dt = (rec_b.timestamp - rec_a.timestamp).total_seconds()
             cap = f"B#{rec_b.record_id}  sim={cand.similarity:.2f}  +{dt:.0f}s"
-            cap += self._cluster_tag(self._b_clusters, rec_b.record_id)
+            cap += self._cluster_tag(self._b_clusters, self._b_cluster_sizes, rec_b.record_id)
             self.gallery_b.add_card(
                 rec_b, cap, lambda r: None, self._on_double,
                 on_confirm=lambda a=rec_a, b=rec_b, s=cand.similarity: self._label_pair(a, b, s, True),

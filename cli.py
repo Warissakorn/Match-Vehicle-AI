@@ -70,6 +70,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Force a one-to-one A/B assignment (Hungarian)")
     parser.add_argument("--no-cache", action="store_true",
                         help="Do not read/write the on-disk detection cache")
+    parser.add_argument("--cluster-same-point", action="store_true",
+                        default=config.DEFAULT_ENABLE_SAME_POINT_CLUSTERING,
+                        help="Group repeat sightings of one vehicle within each point. "
+                             "Off by default: it is a full N-squared similarity pass per "
+                             "point and only affects the 'distinct' count printed below")
     parser.add_argument("--ocr-time", action="store_true",
                         help="Read each frame's true timestamp via OCR before "
                              "processing (writes a sidecar, reused on later runs)")
@@ -104,19 +109,24 @@ def main(argv: list[str] | None = None) -> int:
         _ocr_folder(args.dir_a, "A", pcfg.device, show_progress)
         _ocr_folder(args.dir_b, "B", pcfg.device, show_progress)
 
+    def summarize(res):
+        """One line per point; the 'distinct' clause only when we clustered."""
+        line = f"\n  {len(res.records)} vehicles across {res.frame_count} frames"
+        if args.cluster_same_point:
+            clusters = matcher.cluster_same_point(res.records)
+            line += (f" ({len(set(clusters.values()))} distinct, "
+                     f"after grouping repeat sightings)")
+        print(line)
+
     print("Processing point A ...")
     res_a = pipeline.process_point(args.dir_a, "A", detector, embedder, pcfg,
                                    use_cache=not args.no_cache, progress=show_progress)
-    a_clusters = matcher.cluster_same_point(res_a.records)
-    print(f"\n  {len(res_a.records)} vehicles across {res_a.frame_count} frames "
-          f"({len(set(a_clusters.values()))} distinct, after grouping repeat sightings)")
+    summarize(res_a)
 
     print("Processing point B ...")
     res_b = pipeline.process_point(args.dir_b, "B", detector, embedder, pcfg,
                                    use_cache=not args.no_cache, progress=show_progress)
-    b_clusters = matcher.cluster_same_point(res_b.records)
-    print(f"\n  {len(res_b.records)} vehicles across {res_b.frame_count} frames "
-          f"({len(set(b_clusters.values()))} distinct, after grouping repeat sightings)")
+    summarize(res_b)
 
     mcfg = config.MatchConfig(
         similarity_threshold=args.threshold,
