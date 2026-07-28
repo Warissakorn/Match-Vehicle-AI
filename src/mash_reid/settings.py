@@ -38,6 +38,10 @@ _SCHEMA: dict[str, type] = {
     "cluster_same_point": bool,
     "timeline_samples": int,
     "ocr_time_pattern": str,
+    "ui_theme": str,
+    "step1_open": bool,
+    "step2_open": bool,
+    "step3_open": bool,
 }
 
 

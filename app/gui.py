@@ -135,7 +135,8 @@ class FrameZoomDialog(tk.Toplevel):
         # source image should open at its real size, not pre-blurred.
         self._scale = min(win_w / img.width, win_h / img.height, 1.0)
 
-        self.canvas = tk.Canvas(self, width=win_w, height=win_h, background=theme.TEXT)
+        self.canvas = tk.Canvas(self, width=win_w, height=win_h,
+                                background=theme.VIEWER_BACKDROP)
         hbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
         vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(xscrollcommand=hbar.set, yscrollcommand=vbar.set)
@@ -236,6 +237,21 @@ class ScrollableThumbs(ttk.Frame):
         self._canvas.bind("<Enter>", self._grab_wheel)
         self._canvas.bind("<Leave>", self._release_wheel)
 
+        # The canvas and each card's image holder are classic Tk widgets
+        # carrying a literal colour, so switching schemes leaves them behind
+        # unless they are repainted by hand. Recolouring in place beats
+        # repopulating: a full gallery is 300 cards, each one a disk read and
+        # a decode, and none of that changes with the palette.
+        self._image_labels: list[tk.Label] = []
+        theme.on_change(self._repaint)
+
+    def _repaint(self):
+        # Unguarded on purpose -- see theme.VScrollFrame._repaint: letting
+        # TclError escape is how theme._notify prunes a destroyed listener.
+        self._canvas.configure(background=theme.SURFACE)
+        for label in self._image_labels:
+            label.configure(background=theme.SURFACE)
+
     def _grab_wheel(self, _event=None):
         # Windows/macOS use <MouseWheel> with a delta; X11 sends button 4/5.
         self._canvas.bind_all("<MouseWheel>", self._on_wheel)
@@ -262,6 +278,7 @@ class ScrollableThumbs(ttk.Frame):
         for child in self._inner.winfo_children():
             child.destroy()
         self._refs.clear()
+        self._image_labels.clear()
 
     def add_card(self, record: VehicleRecord, caption: str, on_click, on_double,
                 on_confirm=None, on_reject=None, subcaption: str | None = None):
@@ -286,6 +303,7 @@ class ScrollableThumbs(ttk.Frame):
         btn.pack()
         btn.bind("<Button-1>", lambda e: on_click(record))
         btn.bind("<Double-Button-1>", lambda e: on_double(record))
+        self._image_labels.append(btn)
 
         ttk.Label(card, text=caption, style="Caption.TLabel").pack(anchor="w")
         if subcaption:
@@ -320,6 +338,11 @@ class ScrollableThumbs(ttk.Frame):
 
 
 class ReIDApp(ttk.Frame):
+    #: Ceiling on the scrolling control stack's visible height. Chosen so that
+    #: with every step unfolded on the smallest supported window (600px tall,
+    #: see main()) the galleries still get a usable band rather than a sliver.
+    CONTROLS_MAX_HEIGHT = 420
+
     def __init__(self, master):
         super().__init__(master, padding=theme.PAD_L)
         self.pack(fill="both", expand=True)
@@ -371,6 +394,16 @@ class ReIDApp(ttk.Frame):
         # Pending _rematch callback id, so a slider drag coalesces into one
         # rebuild instead of one per motion event -- see _rematch.
         self._rematch_job = None
+        # Which workflow steps are unfolded. Remembered per step rather than
+        # as one flag: once the folders and clocks are settled, step 3 is the
+        # only one still worth having open, and that state should survive a
+        # restart or the user has to re-fold every launch.
+        self.step_open = {
+            key: tk.BooleanVar(value=saved.get(f"step{key}_open", True))
+            for key in ("1", "2", "3")
+        }
+        self.ui_theme = tk.StringVar(
+            value=saved.get("ui_theme", theme.current_mode()))
 
         self._res_a = None
         self._res_b = None
@@ -401,16 +434,24 @@ class ReIDApp(ttk.Frame):
         Grouping them into steps is what makes that order readable, and is
         what the design doc's card + section-heading pattern is for.
         """
-        top = ttk.Frame(self)
-        top.pack(fill="x", pady=(0, theme.PAD_M))
+        # The control stack scrolls and is height-capped, so however many
+        # steps are open the results area below keeps at least the rest of
+        # the window. Before this the settings simply pushed the galleries
+        # down until there was no room left to compare vehicles in.
+        scroller = theme.VScrollFrame(self, max_height=self.CONTROLS_MAX_HEIGHT)
+        scroller.pack(fill="x", pady=(0, theme.PAD_M))
+        top = scroller.body
+        self._controls_scroller = scroller
 
         # --- Step 1: the frames themselves ---------------------------------
-        step1 = theme.card(top)
-        step1.pack(fill="x", pady=(0, theme.PAD_M))
-        theme.section_header(
-            step1, "STEP 1", "Frames",
+        step1 = theme.CollapsibleCard(
+            top, "STEP 1", "Frames",
             "Point a folder of extracted frames at each camera position, or "
-            "pull them straight out of a video.")
+            "pull them straight out of a video.",
+            expanded=self.step_open["1"].get(),
+            on_toggle=lambda open_, k="1": self._on_step_toggled(k, open_))
+        step1.pack(fill="x", pady=(0, theme.PAD_M))
+        step1 = step1.body
 
         for label, var, pt in (("Point A", self.dir_a, "A"),
                                ("Point B", self.dir_b, "B")):
@@ -430,12 +471,14 @@ class ReIDApp(ttk.Frame):
                        ).pack(side="left", padx=(theme.PAD_S, 0))
 
         # --- Step 2: timestamps + how it runs ------------------------------
-        step2 = theme.card(top)
-        step2.pack(fill="x", pady=(0, theme.PAD_M))
-        theme.section_header(
-            step2, "STEP 2", "Timestamps and model",
+        step2 = theme.CollapsibleCard(
+            top, "STEP 2", "Timestamps and model",
             "Matching is gated on travel time, so the clock has to be right "
-            "before Process. Each point's current state is shown below.")
+            "before Process. Each point's current state is shown below.",
+            expanded=self.step_open["2"].get(),
+            on_toggle=lambda open_, k="2": self._on_step_toggled(k, open_))
+        step2.pack(fill="x", pady=(0, theme.PAD_M))
+        step2 = step2.body
 
         for label, var, pt in (("Point A", self.dir_a, "A"),
                                ("Point B", self.dir_b, "B")):
@@ -484,12 +527,14 @@ class ReIDApp(ttk.Frame):
         self._probe_devices()
 
         # --- Step 3: matching ----------------------------------------------
-        step3 = theme.card(top)
-        step3.pack(fill="x")
-        theme.section_header(
-            step3, "STEP 3", "Match",
+        step3 = theme.CollapsibleCard(
+            top, "STEP 3", "Match",
             "These re-filter an existing run instantly; only \"Detect conf\" "
-            "needs another Process to take effect.")
+            "needs another Process to take effect.",
+            expanded=self.step_open["3"].get(),
+            on_toggle=lambda open_, k="3": self._on_step_toggled(k, open_))
+        step3.pack(fill="x")
+        step3 = step3.body
 
         opts = ttk.Frame(step3, style="Card.TFrame")
         opts.pack(fill="x")
@@ -559,10 +604,32 @@ class ReIDApp(ttk.Frame):
         # colour can flatten.
         ttk.Label(line, textvariable=self.status, style="Status.TLabel",
                   anchor="w").pack(side="left", fill="x", expand=True)
+        self._theme_btn = ttk.Button(line, style="Ghost.TButton",
+                                     command=self._toggle_theme)
+        self._theme_btn.pack(side="right", padx=(theme.PAD_L, 0))
+        self._sync_theme_button()
         self.resource_status = tk.StringVar(value="")
         ttk.Label(line, textvariable=self.resource_status, style="StatusCode.TLabel",
                   anchor="e").pack(side="right", padx=(theme.PAD_L, 0))
         self._poll_resources()
+
+    def _sync_theme_button(self):
+        # Labels the mode it will switch *to*, not the one in effect: a button
+        # reading "Dark" while the window is already dark is the classic
+        # ambiguity here.
+        self._theme_btn.config(
+            text="◑ Dark" if theme.current_mode() == "light" else "◐ Light")
+
+    def _toggle_theme(self):
+        mode = theme.other_mode()
+        theme.set_mode(self.winfo_toplevel(), mode)
+        self.ui_theme.set(mode)
+        self._sync_theme_button()
+        self._save_settings()
+
+    def _on_step_toggled(self, key: str, is_open: bool):
+        self.step_open[key].set(is_open)
+        self._save_settings()
 
     def _poll_resources(self):
         """Refresh the CPU/RAM/GPU readout. Best-effort: a probe failure
@@ -597,10 +664,15 @@ class ReIDApp(ttk.Frame):
         panes = ttk.Panedwindow(self, orient="horizontal")
         panes.pack(fill="both", expand=True)
 
-        left = ttk.Labelframe(panes, text="POINT A - CLICK A VEHICLE", padding=theme.PAD_S)
-        right = ttk.Labelframe(panes, text="POINT B", padding=theme.PAD_S)
-        panes.add(left, weight=1)
-        panes.add(right, weight=1)
+        # theme.panel, not ttk.Labelframe: a Labelframe draws its caption
+        # straddling the top border, and clam paints no gap behind it, so the
+        # 1px rule ran straight through "POINT A - CLICK A VEHICLE". The
+        # caption now sits above the border with nothing crossing anything.
+        left_wrap, left = theme.panel(panes, "Point A - click a vehicle",
+                                      padding=theme.PAD_S)
+        right_wrap, right = theme.panel(panes, "Point B", padding=theme.PAD_S)
+        panes.add(left_wrap, weight=1)
+        panes.add(right_wrap, weight=1)
 
         # Header line mirroring point B's: this is where the gallery cap is
         # now reported, so it no longer has to fight the shared status bar
@@ -922,6 +994,10 @@ class ReIDApp(ttk.Frame):
             "cluster_same_point": self.cluster_same_point.get(),
             "timeline_samples": self.timeline_samples.get(),
             "ocr_time_pattern": self.ocr_time_pattern.get(),
+            "ui_theme": self.ui_theme.get(),
+            "step1_open": self.step_open["1"].get(),
+            "step2_open": self.step_open["2"].get(),
+            "step3_open": self.step_open["3"].get(),
         }
 
     def _save_settings(self):
@@ -1662,11 +1738,26 @@ class TimelineReviewDialog(tk.Toplevel):
     def _build(self):
         pad = {"padx": 8, "pady": 4}
 
-        ttk.Label(self, textvariable=self.header, style="Section.TLabel",
+        # Footer first and pinned to the bottom, then a scroller for
+        # everything above it. The dialog's content is a fixed height (a
+        # summary, a clips table, a samples table and a preview pane) that
+        # simply did not fit a laptop screen: Apply, Cancel and "Read every
+        # frame instead" were pushed off the bottom edge with no way to
+        # reach them. Pinning the footer means the two decisions the dialog
+        # exists to collect are always on screen, and the tables scroll.
+        footer = ttk.Frame(self)
+        footer.pack(side="bottom", fill="x", **pad)
+        ttk.Separator(self, orient="horizontal").pack(side="bottom", fill="x")
+
+        scroller = theme.VScrollFrame(self)
+        scroller.pack(side="top", fill="both", expand=True)
+        page = scroller.body
+
+        ttk.Label(page, textvariable=self.header, style="Section.TLabel",
                   background=theme.BACKGROUND).pack(anchor="w", **pad)
-        ttk.Label(self, textvariable=self.summary).pack(anchor="w", **pad)
-        self._warn_label = ttk.Label(self, textvariable=self.warnings,
-                                     foreground=theme.ERROR, wraplength=1140, justify="left")
+        ttk.Label(page, textvariable=self.summary).pack(anchor="w", **pad)
+        self._warn_label = ttk.Label(page, textvariable=self.warnings,
+                                     foreground=theme.ERROR_TEXT, wraplength=1140, justify="left")
         self._warn_label.pack(anchor="w", **pad)
 
         # The one place a time pattern is picked, typed, saved or managed --
@@ -1675,7 +1766,7 @@ class TimelineReviewDialog(tk.Toplevel):
         # readonly) so a freehand token template still works; picking one of
         # the "pattern   (label)" entries snaps the box back to the bare,
         # compilable pattern immediately (see _on_pattern_selected).
-        prow = ttk.Frame(self)
+        prow = ttk.Frame(page)
         prow.pack(fill="x", **pad)
         ttk.Label(prow, text="Time pattern:").pack(side="left")
         self.pattern_combo = ttk.Combobox(prow, textvariable=self.pattern_text, width=30)
@@ -1690,8 +1781,8 @@ class TimelineReviewDialog(tk.Toplevel):
         ttk.Button(prow, text="?", width=2, command=self._show_pattern_help).pack(
             side="left", padx=(4, 0))
 
-        clips_frame = ttk.Labelframe(self, text="Clips")
-        clips_frame.pack(fill="x", **pad)
+        clips_wrap, clips_frame = theme.panel(page, "Clips")
+        clips_wrap.pack(fill="x", **pad)
         self.clips_tree = ttk.Treeview(clips_frame, columns=self.CLIP_COLUMNS,
                                        show="headings", height=4)
         for col, title, width in (
@@ -1700,7 +1791,7 @@ class TimelineReviewDialog(tk.Toplevel):
                 ("worst", "Worst", 90), ("offset", "Manual offset", 110)):
             self.clips_tree.heading(col, text=title)
             self.clips_tree.column(col, width=width, anchor="w")
-        self.clips_tree.tag_configure("borrowed", foreground=theme.WARNING)
+        self.clips_tree.tag_configure("borrowed", foreground=theme.WARNING_TEXT)
         self.clips_tree.pack(fill="x", padx=4, pady=4)
 
         nudge = ttk.Frame(clips_frame)
@@ -1714,11 +1805,11 @@ class TimelineReviewDialog(tk.Toplevel):
                     textvariable=self.nudge_seconds).pack(side="left", padx=4)
         ttk.Label(nudge, text="seconds").pack(side="left")
 
-        body = ttk.Frame(self)
+        body = ttk.Frame(page)
         body.pack(fill="both", expand=True, **pad)
 
-        samples_frame = ttk.Labelframe(body, text="Sampled frames")
-        samples_frame.pack(side="left", fill="both", expand=True)
+        samples_wrap, samples_frame = theme.panel(body, "Sampled frames")
+        samples_wrap.pack(side="left", fill="both", expand=True)
         self.samples_tree = ttk.Treeview(samples_frame, columns=self.SAMPLE_COLUMNS,
                                          show="headings")
         for col, title, width in (
@@ -1728,9 +1819,13 @@ class TimelineReviewDialog(tk.Toplevel):
                 ("residual", "Off by", 70), ("in", "Used", 50)):
             self.samples_tree.heading(col, text=title)
             self.samples_tree.column(col, width=width, anchor="w")
-        self.samples_tree.tag_configure("outlier", foreground=theme.ERROR)
+        self.samples_tree.tag_configure("outlier", foreground=theme.ERROR_TEXT)
         self.samples_tree.tag_configure("edited", foreground=theme.PRIMARY)
         self.samples_tree.tag_configure("unread", foreground=theme.NEUTRAL)
+        # Treeview tag colours and the warning label's foreground are set per
+        # widget, not per style, so a scheme switch while this dialog is open
+        # would otherwise leave them at the old palette's values.
+        theme.on_change(self._repaint_theme)
         self.samples_tree.bind("<<TreeviewSelect>>", self._on_select_sample)
         # grid rather than pack, so a horizontal scrollbar can sit under the
         # tree: the columns' combined width (OCR text, filename/read clocks,
@@ -1749,8 +1844,8 @@ class TimelineReviewDialog(tk.Toplevel):
         samples_frame.grid_rowconfigure(0, weight=1)
         samples_frame.grid_columnconfigure(0, weight=1)
 
-        detail = ttk.Labelframe(body, text="Selected frame")
-        detail.pack(side="right", fill="y", padx=(8, 0))
+        detail_wrap, detail = theme.panel(body, "Selected frame")
+        detail_wrap.pack(side="right", fill="y", padx=(8, 0))
         self._crop_label = ttk.Label(detail)
         self._crop_label.pack(padx=6, pady=(6, 0))
         self._zoom_btn = ttk.Button(detail, text="Zoom in...", command=self._zoom_selected,
@@ -1773,9 +1868,8 @@ class TimelineReviewDialog(tk.Toplevel):
         ttk.Button(buttons, text="Ignore frame", command=self._ignore_selected).pack(side="left", padx=4)
         ttk.Button(buttons, text="Reset", command=self._reset_selected).pack(side="left")
 
-        footer = ttk.Frame(self)
-        footer.pack(fill="x", **pad)
-        self._apply_btn = ttk.Button(footer, text="Apply and write times", command=self._apply)
+        self._apply_btn = ttk.Button(footer, text="Apply and write times",
+                                     style="Accent.TButton", command=self._apply)
         self._apply_btn.pack(side="right")
         ttk.Button(footer, text="Cancel", command=self.destroy).pack(side="right", padx=4)
         ttk.Button(footer, text="Read every frame instead (slow)",
@@ -1786,6 +1880,16 @@ class TimelineReviewDialog(tk.Toplevel):
         self._resample_btn = ttk.Button(footer, text="Re-sample clock (fresh OCR)...",
                                         command=lambda: self._rescan_with_region(None))
         self._resample_btn.pack(side="left", padx=(4, 0))
+
+    def _repaint_theme(self):
+        # Unguarded on purpose -- see theme.VScrollFrame._repaint. This dialog
+        # is opened and closed repeatedly, so relying on the TclError to prune
+        # the listener is what keeps the list from growing all session.
+        self._warn_label.configure(foreground=theme.ERROR_TEXT)
+        self.clips_tree.tag_configure("borrowed", foreground=theme.WARNING_TEXT)
+        self.samples_tree.tag_configure("outlier", foreground=theme.ERROR_TEXT)
+        self.samples_tree.tag_configure("edited", foreground=theme.PRIMARY)
+        self.samples_tree.tag_configure("unread", foreground=theme.NEUTRAL)
 
     # --- fit + rendering ---------------------------------------------------
 
@@ -2303,7 +2407,15 @@ def main():
     # Before any widget is built: theme.apply swaps the ttk theme to clam and
     # restyles the named default fonts, and widgets created beforehand would
     # keep the old metrics until they were next reconfigured.
-    theme.apply(root)
+    # The remembered scheme has to be installed before any widget is built,
+    # so read it straight from the settings file rather than waiting for
+    # ReIDApp to load it -- a widget created under one palette keeps that
+    # palette's literal colours until something repaints it.
+    try:
+        saved_mode = settings.load().get("ui_theme", theme.DEFAULT_MODE)
+    except Exception:
+        saved_mode = theme.DEFAULT_MODE
+    theme.apply(root, saved_mode if saved_mode in theme.PALETTES else theme.DEFAULT_MODE)
     root.geometry("1180x820")
     # Below this, the control rows (folder pickers, device/model status) no
     # longer have room to lay out without their text running past the

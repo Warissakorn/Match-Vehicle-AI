@@ -233,7 +233,13 @@ download on first use).
 python app/gui.py          # or just ./run.sh
 ```
 
-The window is laid out as the three steps the workflow actually has, in order:
+The window is laid out as the three steps the workflow actually has, in order.
+Each step folds away with the triangle in its header (or by clicking the header
+itself), and the fold state is remembered between runs — once the folders and
+clocks are settled, folding steps 1 and 2 hands the whole height back to the
+galleries, which is where the actual comparing happens. The control stack also
+scrolls and is height-capped, so even with everything unfolded the results area
+keeps its share of a laptop screen.
 
 **Step 1 — Frames.** Browse to the **Point A** and **Point B** frame folders, or
 click **From video...** to extract frames from a video first.
@@ -271,6 +277,11 @@ viewer the timestamp review uses, with the vehicle's box outlined — enough to
 read a plate rather than just confirm a shape. Both galleries scroll with the
 mouse wheel.
 
+The **Fix times...** review window has the same treatment: its Apply / Cancel /
+"Read every frame instead" footer is pinned to the bottom edge and everything
+above it scrolls, so on a screen too short for the full dialog the two decisions
+it exists to collect are still reachable instead of being clipped off-screen.
+
 Every thumbnail shows a second, smaller caption line with its source frame's
 filename and where its timestamp came from (`[ocr]`/`[filename]`/`[exif]`/
 `[mtime]`) — useful for tracing a result back to the exact frame, and for
@@ -284,6 +295,8 @@ Slider and toggle changes re-match instantly (no re-detection needed). Dragging
 a slider coalesces into a single refresh once the pointer settles, so a drag
 across the track costs one gallery rebuild rather than one per pixel of travel.
 
+### Appearance
+
 The window's look follows `app/theme.py`, which ports the design system in
 `genesisDESIGN_1.md` onto ttk: its palette, type scale, 4px spacing grid, 1px
 borders, and the rule that only one filled indigo button (**Process**) appears
@@ -291,6 +304,22 @@ per view. What could not be ported is documented at the top of that file —
 rounded corners, shadows and backdrop blur have no Tk equivalent, and the
 document's web fonts (General Sans / DM Sans / JetBrains Mono) are used when
 installed and substituted with the closest system faces otherwise.
+
+**Light and dark.** The button at the bottom right of the status bar switches
+schemes; it is labelled with the mode it will switch *to*. The choice is
+remembered in `settings.json`. Dark is a designed palette rather than an
+inversion — text is `#F5F5F7` rather than pure white, the darkest surface is
+`#0A0A0B` rather than pure black (the design document forbids pure values for
+text), and the indigo moves up its ramp to `#818CF8` because the light-mode
+value reads as near-black against a dark surface. Both schemes are checked
+against WCAG AA contrast ratios; the semantic colours have separate darker
+variants (`SUCCESS_TEXT`, `WARNING_TEXT`, `ERROR_TEXT`) for use as coloured
+text, because the document's own values are specified for status chips and
+measure only 2.2–2.5:1 as text on white.
+
+`ttk.Labelframe` is used nowhere in the app: it draws its caption straddling
+the top border and `clam` leaves no gap behind it, so the 1px rule ran straight
+through the text. `theme.panel()` puts the caption above the border instead.
 
 The bottom bar shows CPU/RAM/GPU usage alongside the status text (each field
 reads "n/a" if its dependency or a GPU isn't present) — useful for telling
