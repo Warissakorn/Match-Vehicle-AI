@@ -583,3 +583,23 @@ cross-angle accuracy, implement the `Embedder` interface in
 `src/mash_reid/embedder.py` (e.g. a dedicated vehicle Re-ID model such as OSNet
 via `torchreid`, or CLIP) and return it from `get_default_embedder`. Nothing
 else in the pipeline needs to change.
+
+## License
+
+AGPL-3.0 — see [`LICENSE`](LICENSE).
+
+This project depends on [`ultralytics`](https://github.com/ultralytics/ultralytics)
+(the YOLO detector in `src/mash_reid/detector.py`) for vehicle detection,
+which is itself licensed AGPL-3.0. Since that dependency is required rather
+than optional, this project is distributed under the same license rather
+than a permissive one, so the terms stay consistent end to end. In short:
+you can use, modify, and redistribute this software freely, but if you
+distribute a modified version — including running it as a network service
+that other people use — you must make that version's complete source
+available to its users under AGPL-3.0 too.
+
+If you need to embed this in a closed-source product instead, Ultralytics
+sells an [Enterprise License](https://www.ultralytics.com/license) that
+replaces the AGPL obligation for YOLO; you would also need to relicense this
+project's own code under permissive terms once that dependency no longer
+carries AGPL requirements.
