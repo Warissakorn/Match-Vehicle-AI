@@ -42,7 +42,9 @@ sys.path.insert(0, os.path.join(_ROOT, "src"))
 sys.path.insert(0, _HERE)
 
 import config  # noqa: E402
+import i18n  # noqa: E402
 import theme  # noqa: E402
+from i18n import t  # noqa: E402
 from mash_reid import (  # noqa: E402
     logging_setup,
     matcher,
@@ -149,7 +151,7 @@ class FrameZoomDialog(tk.Toplevel):
         self._image_id = self.canvas.create_image(0, 0, anchor="nw")
         self._redraw()
 
-        ttk.Label(self, text="Scroll to zoom - drag the scrollbars to pan.",
+        ttk.Label(self, text=t("Scroll to zoom - drag the scrollbars to pan."),
                   style="Status.TLabel").grid(row=2, column=0, columnspan=2,
                                                   sticky="w", padx=4, pady=(2, 4))
 
@@ -314,8 +316,8 @@ class ScrollableThumbs(ttk.Frame):
             row = ttk.Frame(card, style="Surface.TFrame")
             row.pack(fill="x", pady=(theme.PAD_S, 0))
             status_lbl = ttk.Label(card, text="", style="Caption.TLabel")
-            confirm_btn = ttk.Button(row, text="✓ Same", width=6)
-            reject_btn = ttk.Button(row, text="✗ Diff", width=6)
+            confirm_btn = ttk.Button(row, text=t("✓ Same"), width=6)
+            reject_btn = ttk.Button(row, text=t("✗ Diff"), width=6)
 
             def _mark_done(text):
                 confirm_btn.config(state="disabled")
@@ -325,13 +327,13 @@ class ScrollableThumbs(ttk.Frame):
             if on_confirm:
                 def _do_confirm():
                     on_confirm()
-                    _mark_done("saved: same vehicle")
+                    _mark_done(t("saved: same vehicle"))
                 confirm_btn.config(command=_do_confirm)
                 confirm_btn.pack(side="left", expand=True, fill="x")
             if on_reject:
                 def _do_reject():
                     on_reject()
-                    _mark_done("saved: different vehicle")
+                    _mark_done(t("saved: different vehicle"))
                 reject_btn.config(command=_do_reject)
                 reject_btn.pack(side="left", expand=True, fill="x")
             status_lbl.pack(fill="x")
@@ -381,7 +383,7 @@ class ReIDApp(ttk.Frame):
         # on either point starts from whatever was last used.
         self.ocr_time_pattern = tk.StringVar(value=saved.get("ocr_time_pattern", ""))
         self.last_video_dir = tk.StringVar(value=saved.get("last_video_dir", ""))
-        self.status = tk.StringVar(value="Select folders for point A and B, then Process.")
+        self.status = tk.StringVar(value=t("Select folders for point A and B, then Process."))
         # Per-point timestamp state ("no review yet" / "N times confirmed"),
         # refreshed whenever a folder path changes. See _refresh_time_status.
         self.time_status = {"A": tk.StringVar(), "B": tk.StringVar()}
@@ -389,6 +391,7 @@ class ReIDApp(ttk.Frame):
         # Pending _rematch callback id, so a slider drag coalesces into one
         # rebuild instead of one per motion event -- see _rematch.
         self._rematch_job = None
+        self._resource_job = None  # see _poll_resources
         # Which workflow steps are unfolded. Remembered per step rather than
         # as one flag: once the folders and clocks are settled, step 3 is the
         # only one still worth having open, and that state should survive a
@@ -399,6 +402,8 @@ class ReIDApp(ttk.Frame):
         }
         self.ui_theme = tk.StringVar(
             value=saved.get("ui_theme", theme.current_mode()))
+        self.ui_language = tk.StringVar(
+            value=saved.get("ui_language", i18n.current_language()))
         # Divider between the settings and the results, in pixels from the
         # top. 0 means "never set" -- leave the Panedwindow's own layout to
         # decide, rather than forcing a guess on a first run.
@@ -500,9 +505,9 @@ class ReIDApp(ttk.Frame):
 
         # --- Step 1: the frames themselves ---------------------------------
         step1 = theme.CollapsibleCard(
-            top, "STEP 1", "Frames",
-            "Point a folder of extracted frames at each camera position, or "
-            "pull them straight out of a video.",
+            top, t("STEP 1"), t("Frames"),
+            t("Point a folder of extracted frames at each camera position, or "
+              "pull them straight out of a video."),
             expanded=self.step_open["1"].get(),
             on_toggle=lambda open_, k="1": self._on_step_toggled(k, open_))
         step1.pack(fill="x", pady=(0, theme.PAD_M))
@@ -512,24 +517,24 @@ class ReIDApp(ttk.Frame):
                                ("Point B", self.dir_b, "B")):
             row = ttk.Frame(step1, style="Surface.TFrame")
             row.pack(fill="x", pady=(0, theme.PAD_S))
-            ttk.Label(row, text=label, width=9, style="Card.TLabel").pack(side="left")
+            ttk.Label(row, text=t(label), width=9, style="Card.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=var).pack(
                 side="left", fill="x", expand=True, padx=(0, theme.PAD_M))
             # Typing or pasting a path counts as choosing a folder just as
             # much as Browse does, so the timestamp line has to follow the
             # variable rather than the button -- a trace catches both.
             var.trace_add("write", lambda *_a, p=pt: self._refresh_time_status(p))
-            ttk.Button(row, text="Browse...",
+            ttk.Button(row, text=t("Browse..."),
                        command=lambda v=var: self._browse(v)).pack(side="left")
-            ttk.Button(row, text="From video...",
+            ttk.Button(row, text=t("From video..."),
                        command=lambda v=var, p=pt: self._extract_from_video(v, p)
                        ).pack(side="left", padx=(theme.PAD_S, 0))
 
         # --- Step 2: timestamps + how it runs ------------------------------
         step2 = theme.CollapsibleCard(
-            top, "STEP 2", "Timestamps and model",
-            "Matching is gated on travel time, so the clock has to be right "
-            "before Process. Each point's current state is shown below.",
+            top, t("STEP 2"), t("Timestamps and model"),
+            t("Matching is gated on travel time, so the clock has to be right "
+              "before Process. Each point's current state is shown below."),
             expanded=self.step_open["2"].get(),
             on_toggle=lambda open_, k="2": self._on_step_toggled(k, open_))
         step2.pack(fill="x", pady=(0, theme.PAD_M))
@@ -540,7 +545,7 @@ class ReIDApp(ttk.Frame):
             row = ttk.Frame(step2, style="Surface.TFrame")
             row.pack(fill="x", pady=(0, theme.PAD_S))
             ttk.Label(row, text=label, width=9, style="Card.TLabel").pack(side="left")
-            btn = ttk.Button(row, text="Fix times...")
+            btn = ttk.Button(row, text=t("Fix times..."))
             btn.config(command=lambda v=var, p=pt, b=btn: self._fix_times(v, p, b))
             btn.pack(side="left")
             lbl = ttk.Label(row, textvariable=self.time_status[pt], style="Muted.TLabel",
@@ -551,7 +556,7 @@ class ReIDApp(ttk.Frame):
 
         mrow = ttk.Frame(step2, style="Surface.TFrame")
         mrow.pack(fill="x", pady=(theme.PAD_S, 0))
-        ttk.Label(mrow, text="Model", width=9, style="Card.TLabel").pack(side="left")
+        ttk.Label(mrow, text=t("Model"), width=9, style="Card.TLabel").pack(side="left")
         self._model_combo = ttk.Combobox(
             mrow, textvariable=self.model_display, state="readonly",
             values=[m.display_name for m in model_registry.all_models()])
@@ -560,7 +565,7 @@ class ReIDApp(ttk.Frame):
         self.model_status = tk.StringVar()
         ttk.Label(mrow, textvariable=self.model_status, width=16,
                   style="Muted.TLabel").pack(side="left")
-        ttk.Button(mrow, text="Manage models...",
+        ttk.Button(mrow, text=t("Manage models..."),
                    command=self._open_model_manager).pack(side="left", padx=(theme.PAD_S, 0))
         self._refresh_model_status()
 
@@ -569,11 +574,11 @@ class ReIDApp(ttk.Frame):
         # thread rather than blocking window construction.
         drow = ttk.Frame(step2, style="Surface.TFrame")
         drow.pack(fill="x", pady=(theme.PAD_S, 0))
-        ttk.Label(drow, text="Device", width=9, style="Card.TLabel").pack(side="left")
+        ttk.Label(drow, text=t("Device"), width=9, style="Card.TLabel").pack(side="left")
         self._device_combo = ttk.Combobox(
             drow, textvariable=self.device, state="readonly", values=["auto"], width=10)
         self._device_combo.pack(side="left", padx=(0, theme.PAD_M))
-        self.device_status = tk.StringVar(value="probing...")
+        self.device_status = tk.StringVar(value=t("probing..."))
         # wraplength so a long GPU name ("CUDA (NVIDIA GeForce RTX 4060
         # Laptop GPU)") wraps onto a second line instead of running past the
         # window's edge with no way to see the rest of it.
@@ -583,9 +588,9 @@ class ReIDApp(ttk.Frame):
 
         # --- Step 3: matching ----------------------------------------------
         step3 = theme.CollapsibleCard(
-            top, "STEP 3", "Match",
-            "These re-filter an existing run instantly; only \"Detect conf\" "
-            "needs another Process to take effect.",
+            top, t("STEP 3"), t("Match"),
+            t("These re-filter an existing run instantly; only \"Detect conf\" "
+              "needs another Process to take effect."),
             expanded=self.step_open["3"].get(),
             on_toggle=lambda open_, k="3": self._on_step_toggled(k, open_))
         step3.pack(fill="x")
@@ -593,23 +598,23 @@ class ReIDApp(ttk.Frame):
 
         opts = ttk.Frame(step3, style="Surface.TFrame")
         opts.pack(fill="x")
-        self._add_slider(opts, "Similarity", self.threshold, 0.0, 1.0)
-        self._add_slider(opts, "Detect conf", self.det_conf, 0.05, 0.9)
-        self._add_slider(opts, "Min travel (s)", self.min_travel, 0.0, 1800.0)
-        self._add_slider(opts, "Max travel (s)", self.max_travel, 10.0, 3600.0)
+        self._add_slider(opts, t("Similarity"), self.threshold, 0.0, 1.0)
+        self._add_slider(opts, t("Detect conf"), self.det_conf, 0.05, 0.9)
+        self._add_slider(opts, t("Min travel (s)"), self.min_travel, 0.0, 1800.0)
+        self._add_slider(opts, t("Max travel (s)"), self.max_travel, 10.0, 3600.0)
 
         toggles = ttk.Frame(step3, style="Surface.TFrame")
         toggles.pack(fill="x", pady=(theme.PAD_M, 0))
-        ttk.Checkbutton(toggles, text="Use time gate", variable=self.use_gate,
+        ttk.Checkbutton(toggles, text=t("Use time gate"), variable=self.use_gate,
                         command=self._rematch).pack(side="left", padx=(0, theme.PAD_L))
-        ttk.Checkbutton(toggles, text="One-to-one", variable=self.one_to_one,
+        ttk.Checkbutton(toggles, text=t("One-to-one"), variable=self.one_to_one,
                         command=self._rematch).pack(side="left", padx=(0, theme.PAD_L))
-        ttk.Checkbutton(toggles, text="Group repeat sightings (slow)",
+        ttk.Checkbutton(toggles, text=t("Group repeat sightings (slow)"),
                         variable=self.cluster_same_point).pack(side="left")
         # The one filled indigo button in the window: the design doc allows a
         # single primary action per view section, and this is the action every
         # other control here leads up to.
-        self._process_btn = ttk.Button(toggles, text="Process",
+        self._process_btn = ttk.Button(toggles, text=t("Process"),
                                        style="Accent.TButton", command=self._on_process)
         self._process_btn.pack(side="right")
 
@@ -623,13 +628,18 @@ class ReIDApp(ttk.Frame):
         var = self.dir_a if point == "A" else self.dir_b
         folder = var.get().strip()
         if not folder or not os.path.isdir(folder):
-            level, text = "none", "pick a folder first"
+            level, text = "none", t("pick a folder first")
         else:
             try:
-                level, text = timestamp_ocr.describe_sidecar(folder)
+                # describe_sidecar hands back a format template and its
+                # values rather than a finished sentence, so the template can
+                # be translated first. The split lives there rather than here
+                # because the sentence is assembled from the sidecar's shape.
+                level, template, values = timestamp_ocr.describe_sidecar(folder)
+                text = i18n.tf(template, **values)
             except Exception:
                 log.debug("Could not describe sidecar for %s", folder, exc_info=True)
-                level, text = "none", "could not read this folder's timestamps"
+                level, text = "none", t("could not read this folder's timestamps")
         self.time_status[point].set(text)
         label = self._time_labels.get(point)
         if label is not None:
@@ -663,6 +673,16 @@ class ReIDApp(ttk.Frame):
                                      command=self._toggle_theme)
         self._theme_btn.pack(side="right", padx=(theme.PAD_L, 0))
         self._sync_theme_button()
+
+        lang_combo = ttk.Combobox(
+            line, state="readonly", width=8,
+            values=[i18n.display_name(c) for c in i18n.available()])
+        lang_combo.set(i18n.display_name(self.ui_language.get()))
+        lang_combo.bind("<<ComboboxSelected>>",
+                        lambda e: self._set_language(
+                            i18n.code_for_display(e.widget.get())))
+        lang_combo.pack(side="right", padx=(theme.PAD_L, 0))
+        ttk.Label(line, text=t("Language"), style="Status.TLabel").pack(side="right")
         self.resource_status = tk.StringVar(value="")
         ttk.Label(line, textvariable=self.resource_status, style="StatusCode.TLabel",
                   anchor="e").pack(side="right", padx=(theme.PAD_L, 0))
@@ -682,6 +702,67 @@ class ReIDApp(ttk.Frame):
         self._sync_theme_button()
         self._save_settings()
 
+    def _set_language(self, code: str):
+        """Switch language: catalog, then fonts, then rebuild the window.
+
+        A rebuild rather than a live retranslation because every label was
+        constructed with its final text -- there is no registry of "this
+        widget shows string X" to walk. Rebuilding is cheap and total: the
+        settings all live in Tk variables held on ``self``, which outlive the
+        widgets that displayed them, and the results are held as plain data,
+        so nothing is lost. It also picks up the font change, which a text
+        substitution could not do on its own.
+        """
+        if code == i18n.current_language():
+            return
+        self.ui_language.set(code)
+        i18n.set_language(code)
+        # Fonts before widgets: Fonts is rebuilt here, and _build_* reads
+        # theme.FONTS while constructing.
+        theme.set_language(self.winfo_toplevel(), code)
+        # The title lives on the Toplevel, outside the tree _rebuild_ui
+        # replaces, so it has to be set separately or it keeps the old
+        # language for the rest of the session.
+        try:
+            self.winfo_toplevel().title(t("Match-Vehicle-AI  |  Cross-Point Vehicle Re-ID"))
+        except tk.TclError:
+            pass
+        self._save_settings()
+        self._rebuild_ui()
+
+    def _rebuild_ui(self):
+        """Tear the window's widgets down and build them again.
+
+        Destroyed galleries leave dead theme listeners behind; ``theme._notify``
+        drops those on the next switch by design, so no explicit unregister is
+        needed here.
+        """
+        sash = self._current_sash()
+        for job in (self._rematch_job, self._resource_job):
+            if job is not None:
+                self.after_cancel(job)
+        self._rematch_job = self._resource_job = None
+        for child in list(self.winfo_children()):
+            child.destroy()
+        self._time_labels.clear()
+
+        self._build_status_bar()
+        self._build_split()
+        self._build_controls()
+        self._build_panels()
+
+        # Repaint the results that survived the teardown, so switching
+        # language mid-session does not throw away a completed run.
+        if self._res_a is not None and self._res_b is not None:
+            self._populate_a()
+            if self._last_selected_a is not None:
+                self._on_select_a(self._last_selected_a)
+            else:
+                self._populate_b_all()
+        if sash > 0:
+            self.split_sash.set(sash)
+        self.after_idle(self._restore_sash)
+
     def _on_step_toggled(self, key: str, is_open: bool):
         self.step_open[key].set(is_open)
         self._save_settings()
@@ -690,12 +771,17 @@ class ReIDApp(ttk.Frame):
         """Refresh the CPU/RAM/GPU readout. Best-effort: a probe failure
         (missing psutil, no GPU, ...) shows "n/a" for that field rather than
         breaking the loop -- see ``mash_reid.sysmon``.
+
+        The pending callback id is kept so ``_rebuild_ui`` can cancel it:
+        rebuilding calls ``_build_status_bar`` again, which starts a second
+        loop, and without cancelling, every language switch would leave
+        another one running for the rest of the session.
         """
         try:
             self.resource_status.set(sysmon.format_sample(sysmon.sample()))
         except Exception:
             log.debug("Resource sample failed", exc_info=True)
-        self.after(config.RESOURCE_POLL_MS, self._poll_resources)
+        self._resource_job = self.after(config.RESOURCE_POLL_MS, self._poll_resources)
 
     def _add_slider(self, parent, label, var, lo, hi):
         frame = ttk.Frame(parent, style="Surface.TFrame")
@@ -723,9 +809,9 @@ class ReIDApp(ttk.Frame):
         # straddling the top border, and clam paints no gap behind it, so the
         # 1px rule ran straight through "POINT A - CLICK A VEHICLE". The
         # caption now sits above the border with nothing crossing anything.
-        left_wrap, left = theme.panel(panes, "Point A - click a vehicle",
+        left_wrap, left = theme.panel(panes, t("Point A - click a vehicle"),
                                       padding=theme.PAD_S)
-        right_wrap, right = theme.panel(panes, "Point B", padding=theme.PAD_S)
+        right_wrap, right = theme.panel(panes, t("Point B"), padding=theme.PAD_S)
         panes.add(left_wrap, weight=1)
         panes.add(right_wrap, weight=1)
 
@@ -734,7 +820,7 @@ class ReIDApp(ttk.Frame):
         # for the same line of text.
         a_toolbar = ttk.Frame(left, style="Surface.TFrame")
         a_toolbar.pack(fill="x", pady=(0, theme.PAD_S))
-        self.a_view_label = tk.StringVar(value="No results yet - run Process")
+        self.a_view_label = tk.StringVar(value=t("No results yet - run Process"))
         ttk.Label(a_toolbar, textvariable=self.a_view_label,
                   style="Muted.TLabel").pack(side="left")
 
@@ -743,10 +829,10 @@ class ReIDApp(ttk.Frame):
 
         b_toolbar = ttk.Frame(right, style="Surface.TFrame")
         b_toolbar.pack(fill="x", pady=(0, theme.PAD_S))
-        self.b_view_label = tk.StringVar(value="Showing: all point B vehicles")
+        self.b_view_label = tk.StringVar(value=t("Showing: all point B vehicles"))
         ttk.Label(b_toolbar, textvariable=self.b_view_label,
                   style="Muted.TLabel").pack(side="left")
-        ttk.Button(b_toolbar, text="Show all B", style="Ghost.TButton",
+        ttk.Button(b_toolbar, text=t("Show all B"), style="Ghost.TButton",
                    command=self._show_all_b).pack(side="right")
 
         self.gallery_b = ScrollableThumbs(right, columns=2)
@@ -778,7 +864,7 @@ class ReIDApp(ttk.Frame):
         """
         folder = folder_var.get().strip()
         if not folder or not os.path.isdir(folder):
-            messagebox.showerror("No folder", f"Pick a valid folder for point {point} first.",
+            messagebox.showerror(t("No folder"), f"Pick a valid folder for point {point} first.",
                                  parent=self)
             return
 
@@ -805,7 +891,7 @@ class ReIDApp(ttk.Frame):
             try:
                 custom_pattern = timestamp_ocr.compile_custom_pattern(pattern_text)
             except ValueError as exc:
-                messagebox.showerror("Bad time pattern", str(exc), parent=self)
+                messagebox.showerror(t("Bad time pattern"), str(exc), parent=self)
                 return
 
         q: queue.Queue = queue.Queue()
@@ -851,8 +937,8 @@ class ReIDApp(ttk.Frame):
                         self.status.set(payload)
                     elif kind == "error":
                         finish()
-                        self.status.set("Reading the clock failed.")
-                        messagebox.showerror("Could not read timestamps", payload, parent=self)
+                        self.status.set(t("Reading the clock failed."))
+                        messagebox.showerror(t("Could not read timestamps"), payload, parent=self)
                         return
                     elif kind == "done":
                         finish()
@@ -877,7 +963,7 @@ class ReIDApp(ttk.Frame):
     def _refresh_model_status(self):
         """Show whether the chosen model's weights are already downloaded."""
         installed = model_manager.is_installed(self.model_key.get())
-        self.model_status.set("✓ downloaded" if installed else "not downloaded")
+        self.model_status.set(t("✓ downloaded") if installed else t("not downloaded"))
 
     def _open_model_manager(self):
         ModelManagerDialog(self, on_close=self._refresh_model_status)
@@ -936,11 +1022,11 @@ class ReIDApp(ttk.Frame):
     def _on_process(self):
         dir_a, dir_b = self.dir_a.get().strip(), self.dir_b.get().strip()
         if not os.path.isdir(dir_a) or not os.path.isdir(dir_b):
-            messagebox.showerror("Invalid folders", "Please choose valid A and B folders.",
+            messagebox.showerror(t("Invalid folders"), t("Please choose valid A and B folders."),
                                  parent=self)
             return
         self._process_btn.config(state="disabled")
-        self.status.set("Loading models and processing frames... (first run downloads weights)")
+        self.status.set(t("Loading models and processing frames... (first run downloads weights)"))
         # Read the Tk var here, on the main thread, and hand it to the worker
         # as a plain bool -- worker threads must not touch Tk variables.
         cluster = self.cluster_same_point.get()
@@ -959,9 +1045,9 @@ class ReIDApp(ttk.Frame):
             def progress(done, total, msg):
                 self._queue.put(("status", f"[{done}/{total}] {msg}"))
 
-            self._queue.put(("status", "Processing point A..."))
+            self._queue.put(("status", t("Processing point A...")))
             res_a = pipeline.process_point(dir_a, "A", detector, embedder, pcfg, progress=progress)
-            self._queue.put(("status", "Processing point B..."))
+            self._queue.put(("status", t("Processing point B...")))
             res_b = pipeline.process_point(dir_b, "B", detector, embedder, pcfg, progress=progress)
 
             # Group repeat sightings of the same vehicle within each point
@@ -978,7 +1064,7 @@ class ReIDApp(ttk.Frame):
             a_clusters: dict[int, int] = {}
             b_clusters: dict[int, int] = {}
             if cluster_same_point:
-                self._queue.put(("status", "Grouping repeat sightings..."))
+                self._queue.put(("status", t("Grouping repeat sightings...")))
                 a_clusters = matcher.cluster_same_point(res_a.records)
                 b_clusters = matcher.cluster_same_point(res_b.records)
 
@@ -994,8 +1080,8 @@ class ReIDApp(ttk.Frame):
                     self.status.set(payload)
                 elif kind == "error":
                     self._process_btn.config(state="normal")
-                    self.status.set("Error.")
-                    messagebox.showerror("Processing failed", payload, parent=self)
+                    self.status.set(t("Error."))
+                    messagebox.showerror(t("Processing failed"), payload, parent=self)
                     return
                 elif kind == "done":
                     self._on_processed(*payload)
@@ -1054,6 +1140,7 @@ class ReIDApp(ttk.Frame):
             "step2_open": self.step_open["2"].get(),
             "step3_open": self.step_open["3"].get(),
             "split_sash": self._current_sash(),
+            "ui_language": self.ui_language.get(),
         }
 
     def _save_settings(self):
@@ -1092,7 +1179,7 @@ class ReIDApp(ttk.Frame):
     def _populate_a(self):
         self.gallery_a.clear()
         if not self._res_a:
-            self.a_view_label.set("No results yet - run Process")
+            self.a_view_label.set(t("No results yet - run Process"))
             return
         records = self._res_a.records
         shown = records[: config.DEFAULT_MAX_GALLERY_THUMBNAILS]
@@ -1127,7 +1214,7 @@ class ReIDApp(ttk.Frame):
         """
         self.gallery_b.clear()
         if not self._res_b:
-            self.b_view_label.set("Showing: all point B vehicles")
+            self.b_view_label.set(t("Showing: all point B vehicles"))
             return
         records = self._res_b.records
         shown = records[: config.DEFAULT_MAX_GALLERY_THUMBNAILS]
@@ -1173,7 +1260,7 @@ class ReIDApp(ttk.Frame):
             training_export.export_labeled_pair(
                 config.DEFAULT_TRAINING_DATA_DIR, rec_a, rec_b, same, similarity)
         except Exception as exc:
-            messagebox.showerror("Could not save training pair", str(exc), parent=self)
+            messagebox.showerror(t("Could not save training pair"), str(exc), parent=self)
             return
         pos, neg = training_export.count_labeled_pairs(config.DEFAULT_TRAINING_DATA_DIR)
         self.status.set(
@@ -1248,7 +1335,7 @@ class VideoExtractDialog(tk.Toplevel):
         default_interval = getattr(parent, "extract_interval", None)
         self.interval = tk.DoubleVar(value=default_interval.get() if default_interval else 1.0)
         self.start_time = tk.StringVar()
-        self.status = tk.StringVar(value="Choose one or more videos to begin.")
+        self.status = tk.StringVar(value=t("Choose one or more videos to begin."))
 
         self._build()
         self.transient(parent)
@@ -1259,32 +1346,32 @@ class VideoExtractDialog(tk.Toplevel):
 
         vrow = ttk.Frame(self)
         vrow.pack(fill="x", **pad)
-        ttk.Label(vrow, text="Video(s)", width=10).pack(side="left", anchor="n")
+        ttk.Label(vrow, text=t("Video(s)"), width=10).pack(side="left", anchor="n")
         self._video_list = tk.Listbox(vrow, height=4, width=48)
         self._video_list.pack(side="left", fill="x", expand=True)
         vbtns = ttk.Frame(vrow)
         vbtns.pack(side="left", padx=4)
-        ttk.Button(vbtns, text="Browse...", command=self._pick_video).pack(fill="x")
-        ttk.Button(vbtns, text="Clear", command=self._clear_videos).pack(fill="x", pady=(2, 0))
+        ttk.Button(vbtns, text=t("Browse..."), command=self._pick_video).pack(fill="x")
+        ttk.Button(vbtns, text=t("Clear"), command=self._clear_videos).pack(fill="x", pady=(2, 0))
 
         orow = ttk.Frame(self)
         orow.pack(fill="x", **pad)
-        ttk.Label(orow, text="Output", width=10).pack(side="left")
+        ttk.Label(orow, text=t("Output"), width=10).pack(side="left")
         ttk.Entry(orow, textvariable=self.out_dir, width=48).pack(side="left", fill="x", expand=True)
-        ttk.Button(orow, text="Browse...", command=self._pick_out).pack(side="left", padx=4)
+        ttk.Button(orow, text=t("Browse..."), command=self._pick_out).pack(side="left", padx=4)
 
         srow = ttk.Frame(self)
         srow.pack(fill="x", **pad)
-        ttk.Label(srow, text="Start time", width=10).pack(side="left")
+        ttk.Label(srow, text=t("Start time"), width=10).pack(side="left")
         self._start_entry = ttk.Entry(srow, textvariable=self.start_time, width=24)
         self._start_entry.pack(side="left")
         self._start_hint = ttk.Label(
-            srow, text="(auto from filename; edit as YYYY-MM-DD HH:MM:SS)")
+            srow, text=t("(auto from filename; edit as YYYY-MM-DD HH:MM:SS)"))
         self._start_hint.pack(side="left", padx=6)
 
         irow = ttk.Frame(self)
         irow.pack(fill="x", **pad)
-        ttk.Label(irow, text="Interval (s)", width=10).pack(side="left")
+        ttk.Label(irow, text=t("Interval (s)"), width=10).pack(side="left")
         ttk.Spinbox(irow, from_=0.1, to=60.0, increment=0.5, textvariable=self.interval,
                     width=8).pack(side="left")
 
@@ -1293,9 +1380,9 @@ class VideoExtractDialog(tk.Toplevel):
 
         brow = ttk.Frame(self)
         brow.pack(fill="x", **pad)
-        self._extract_btn = ttk.Button(brow, text="Extract", command=self._start)
+        self._extract_btn = ttk.Button(brow, text=t("Extract"), command=self._start)
         self._extract_btn.pack(side="right")
-        ttk.Button(brow, text="Close", command=self.destroy).pack(side="right", padx=4)
+        ttk.Button(brow, text=t("Close"), command=self.destroy).pack(side="right", padx=4)
 
     def _pick_video(self):
         last_dir_var = getattr(self._app, "last_video_dir", None)
@@ -1335,7 +1422,7 @@ class VideoExtractDialog(tk.Toplevel):
         self.video_paths = []
         self._video_list.delete(0, "end")
         self._start_entry.config(state="normal")
-        self.status.set("Choose one or more videos to begin.")
+        self.status.set(t("Choose one or more videos to begin."))
 
     def _pick_out(self):
         path = filedialog.askdirectory(parent=self)
@@ -1357,13 +1444,13 @@ class VideoExtractDialog(tk.Toplevel):
     def _start(self):
         out = self.out_dir.get().strip()
         if not self.video_paths:
-            messagebox.showerror("No video", "Please choose at least one video file.", parent=self)
+            messagebox.showerror(t("No video"), t("Please choose at least one video file."), parent=self)
             return
         if not all(os.path.isfile(v) for v in self.video_paths):
-            messagebox.showerror("No video", "One or more selected videos no longer exist.", parent=self)
+            messagebox.showerror(t("No video"), t("One or more selected videos no longer exist."), parent=self)
             return
         if not out:
-            messagebox.showerror("No output", "Please choose an output folder.", parent=self)
+            messagebox.showerror(t("No output"), t("Please choose an output folder."), parent=self)
             return
 
         start_dt = None
@@ -1371,7 +1458,7 @@ class VideoExtractDialog(tk.Toplevel):
             try:
                 start_dt = self._parse_start()
             except ValueError as exc:
-                messagebox.showerror("Invalid start time", str(exc), parent=self)
+                messagebox.showerror(t("Invalid start time"), str(exc), parent=self)
                 return
 
         interval = self.interval.get()
@@ -1380,7 +1467,7 @@ class VideoExtractDialog(tk.Toplevel):
             default_interval.set(interval)  # remember for the next time this dialog opens
 
         self._extract_btn.config(state="disabled")
-        self.status.set("Extracting frames...")
+        self.status.set(t("Extracting frames..."))
         thread = threading.Thread(
             target=self._worker, args=(list(self.video_paths), out, start_dt, interval),
             daemon=True,
@@ -1415,7 +1502,7 @@ class VideoExtractDialog(tk.Toplevel):
                     self.status.set(payload)
                 elif kind == "error":
                     self._extract_btn.config(state="normal")
-                    messagebox.showerror("Extraction failed", payload, parent=self)
+                    messagebox.showerror(t("Extraction failed"), payload, parent=self)
                     return
                 elif kind == "done":
                     out, count = payload
@@ -1423,7 +1510,7 @@ class VideoExtractDialog(tk.Toplevel):
                     self.folder_var.set(out)  # feed it back to the main window
                     self.status.set(f"Done: {count} frames -> {out}")
                     messagebox.showinfo(
-                        "Extraction complete",
+                        t("Extraction complete"),
                         f"Wrote {count} frames to:\n{out}\n\n"
                         f"This folder is now set as point {self.point}.",
                         parent=self,
@@ -1472,11 +1559,11 @@ class ModelManagerDialog(tk.Toplevel):
         tree_frame.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(tree_frame, columns=self.COLUMNS, show="tree headings",
                                  selectmode="browse")
-        self.tree.heading("#0", text="Model")
-        self.tree.heading("family", text="Family")
-        self.tree.heading("size", text="Size")
+        self.tree.heading("#0", text=t("Model"))
+        self.tree.heading("family", text=t("Family"))
+        self.tree.heading("size", text=t("Size"))
         self.tree.heading("approx", text="~MB")
-        self.tree.heading("status", text="Status")
+        self.tree.heading("status", text=t("Status"))
         self.tree.column("#0", width=200)
         self.tree.column("family", width=90, anchor="center")
         self.tree.column("size", width=90, anchor="center")
@@ -1492,13 +1579,13 @@ class ModelManagerDialog(tk.Toplevel):
 
         btns = ttk.Frame(self, padding=8)
         btns.pack(fill="x")
-        self._dl_btn = ttk.Button(btns, text="Download", command=lambda: self._run("download"))
+        self._dl_btn = ttk.Button(btns, text=t("Download"), command=lambda: self._run("download"))
         self._dl_btn.pack(side="left")
-        self._up_btn = ttk.Button(btns, text="Update (latest)", command=lambda: self._run("update"))
+        self._up_btn = ttk.Button(btns, text=t("Update (latest)"), command=lambda: self._run("update"))
         self._up_btn.pack(side="left", padx=4)
-        self._rm_btn = ttk.Button(btns, text="Remove", command=self._remove)
+        self._rm_btn = ttk.Button(btns, text=t("Remove"), command=self._remove)
         self._rm_btn.pack(side="left")
-        ttk.Button(btns, text="Close", command=self._close).pack(side="right")
+        ttk.Button(btns, text=t("Close"), command=self._close).pack(side="right")
 
     def _refresh_rows(self):
         selected = self._selected_key()
@@ -1560,7 +1647,7 @@ class ModelManagerDialog(tk.Toplevel):
                 elif kind == "error":
                     self._set_busy(False)
                     self._refresh_rows()
-                    messagebox.showerror("Model download failed", payload, parent=self)
+                    messagebox.showerror(t("Model download failed"), payload, parent=self)
                     return
                 elif kind == "done":
                     self._set_busy(False)
@@ -1593,8 +1680,8 @@ class PatternManagerDialog(tk.Toplevel):
         self.on_change = on_change
 
         self.tree = ttk.Treeview(self, columns=("name", "pattern"), show="headings")
-        self.tree.heading("name", text="Name")
-        self.tree.heading("pattern", text="Pattern")
+        self.tree.heading("name", text=t("Name"))
+        self.tree.heading("pattern", text=t("Pattern"))
         self.tree.column("name", width=160, anchor="w")
         self.tree.column("pattern", width=360, anchor="w")
         vbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
@@ -1608,8 +1695,8 @@ class PatternManagerDialog(tk.Toplevel):
 
         footer = ttk.Frame(self)
         footer.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6, pady=6)
-        ttk.Button(footer, text="Delete", command=self._delete_selected).pack(side="left")
-        ttk.Button(footer, text="Close", command=self.destroy).pack(side="right")
+        ttk.Button(footer, text=t("Delete"), command=self._delete_selected).pack(side="left")
+        ttk.Button(footer, text=t("Close"), command=self.destroy).pack(side="right")
 
         self._refresh()
         self.transient(parent)
@@ -1625,7 +1712,7 @@ class PatternManagerDialog(tk.Toplevel):
         if not selection:
             return
         name = selection[0]
-        if not messagebox.askyesno("Delete pattern", f"Delete saved pattern \"{name}\"?",
+        if not messagebox.askyesno(t("Delete pattern"), f"Delete saved pattern \"{name}\"?",
                                    parent=self):
             return
         saved = timestamp_ocr.load_saved_patterns()
@@ -1687,10 +1774,10 @@ class RegionPickerDialog(tk.Toplevel):
 
         footer = ttk.Frame(self)
         footer.pack(fill="x", padx=8, pady=8)
-        self._use_btn = ttk.Button(footer, text="Use this box", state="disabled",
+        self._use_btn = ttk.Button(footer, text=t("Use this box"), state="disabled",
                                    command=self._confirm)
         self._use_btn.pack(side="right")
-        ttk.Button(footer, text="Cancel", command=self._cancel).pack(side="right", padx=4)
+        ttk.Button(footer, text=t("Cancel"), command=self._cancel).pack(side="right", padx=4)
 
         self.transient(parent)
         self.grab_set()
@@ -1824,20 +1911,20 @@ class TimelineReviewDialog(tk.Toplevel):
         # compilable pattern immediately (see _on_pattern_selected).
         prow = ttk.Frame(page)
         prow.pack(fill="x", **pad)
-        ttk.Label(prow, text="Time pattern:").pack(side="left")
+        ttk.Label(prow, text=t("Time pattern:")).pack(side="left")
         self.pattern_combo = ttk.Combobox(prow, textvariable=self.pattern_text, width=30)
         self.pattern_combo.pack(side="left", fill="x", expand=True, padx=4)
         self.pattern_combo.bind("<<ComboboxSelected>>", self._on_pattern_selected)
         self._refresh_pattern_choices()
-        ttk.Button(prow, text="Re-parse", command=self._apply_custom_pattern).pack(side="left")
-        ttk.Button(prow, text="Save as...", command=self._save_pattern_as).pack(
+        ttk.Button(prow, text=t("Re-parse"), command=self._apply_custom_pattern).pack(side="left")
+        ttk.Button(prow, text=t("Save as..."), command=self._save_pattern_as).pack(
             side="left", padx=(4, 0))
-        ttk.Button(prow, text="Manage...", command=self._manage_patterns).pack(
+        ttk.Button(prow, text=t("Manage..."), command=self._manage_patterns).pack(
             side="left", padx=(4, 0))
-        ttk.Button(prow, text="?", width=2, command=self._show_pattern_help).pack(
+        ttk.Button(prow, text=t("?"), width=2, command=self._show_pattern_help).pack(
             side="left", padx=(4, 0))
 
-        clips_wrap, clips_frame = theme.panel(page, "Clips")
+        clips_wrap, clips_frame = theme.panel(page, t("Clips"))
         clips_wrap.pack(fill="x", **pad)
         self.clips_tree = ttk.Treeview(clips_frame, columns=self.CLIP_COLUMNS,
                                        show="headings", height=4)
@@ -1845,26 +1932,26 @@ class TimelineReviewDialog(tk.Toplevel):
                 ("clip", "Clip", 60), ("frames", "Frames", 80), ("samples", "Read", 80),
                 ("start", "Start time", 190), ("mad", "Typical error", 110),
                 ("worst", "Worst", 90), ("offset", "Manual offset", 110)):
-            self.clips_tree.heading(col, text=title)
+            self.clips_tree.heading(col, text=t(title))
             self.clips_tree.column(col, width=width, anchor="w")
         self.clips_tree.tag_configure("borrowed", foreground=theme.WARNING_TEXT)
         self.clips_tree.pack(fill="x", padx=4, pady=4)
 
         nudge = ttk.Frame(clips_frame)
         nudge.pack(fill="x", padx=4, pady=(0, 4))
-        ttk.Button(nudge, text="Shift selected clip",
+        ttk.Button(nudge, text=t("Shift selected clip"),
                    command=lambda: self._nudge(selected_only=True)).pack(side="left")
-        ttk.Button(nudge, text="Shift all clips",
+        ttk.Button(nudge, text=t("Shift all clips"),
                    command=lambda: self._nudge(selected_only=False)).pack(side="left", padx=4)
         self.nudge_seconds = tk.DoubleVar(value=0.0)
         ttk.Spinbox(nudge, from_=-3600.0, to=3600.0, increment=0.5, width=10,
                     textvariable=self.nudge_seconds).pack(side="left", padx=4)
-        ttk.Label(nudge, text="seconds").pack(side="left")
+        ttk.Label(nudge, text=t("seconds")).pack(side="left")
 
         body = ttk.Frame(page)
         body.pack(fill="both", expand=True, **pad)
 
-        samples_wrap, samples_frame = theme.panel(body, "Sampled frames")
+        samples_wrap, samples_frame = theme.panel(body, t("Sampled frames"))
         samples_wrap.pack(side="left", fill="both", expand=True)
         self.samples_tree = ttk.Treeview(samples_frame, columns=self.SAMPLE_COLUMNS,
                                          show="headings")
@@ -1873,7 +1960,7 @@ class TimelineReviewDialog(tk.Toplevel):
                 ("filename", "Filename clock", 150), ("text", "OCR text", 190),
                 ("conf", "Conf", 55), ("read", "Read clock", 150),
                 ("residual", "Off by", 70), ("in", "Used", 50)):
-            self.samples_tree.heading(col, text=title)
+            self.samples_tree.heading(col, text=t(title))
             self.samples_tree.column(col, width=width, anchor="w")
         self.samples_tree.tag_configure("outlier", foreground=theme.ERROR_TEXT)
         self.samples_tree.tag_configure("edited", foreground=theme.PRIMARY)
@@ -1900,40 +1987,40 @@ class TimelineReviewDialog(tk.Toplevel):
         samples_frame.grid_rowconfigure(0, weight=1)
         samples_frame.grid_columnconfigure(0, weight=1)
 
-        detail_wrap, detail = theme.panel(body, "Selected frame")
+        detail_wrap, detail = theme.panel(body, t("Selected frame"))
         detail_wrap.pack(side="right", fill="y", padx=(8, 0))
         self._crop_label = ttk.Label(detail)
         self._crop_label.pack(padx=6, pady=(6, 0))
-        self._zoom_btn = ttk.Button(detail, text="Zoom in...", command=self._zoom_selected,
+        self._zoom_btn = ttk.Button(detail, text=t("Zoom in..."), command=self._zoom_selected,
                                     state="disabled")
         self._zoom_btn.pack(padx=6, pady=(2, 6))
         ttk.Label(detail, textvariable=self.detail_caption, wraplength=380,
                   justify="left", style="Muted.TLabel").pack(anchor="w", padx=6)
 
-        ttk.Label(detail, text="Readings the OCR considered:").pack(anchor="w", padx=6, pady=(8, 0))
+        ttk.Label(detail, text=t("Readings the OCR considered:")).pack(anchor="w", padx=6, pady=(8, 0))
         self.candidate_combo = ttk.Combobox(detail, state="readonly", width=52)
         self.candidate_combo.pack(padx=6, pady=2)
 
-        ttk.Label(detail, text="Or type the correct time (YYYY-MM-DD HH:MM:SS):"
+        ttk.Label(detail, text=t("Or type the correct time (YYYY-MM-DD HH:MM:SS):")
                   ).pack(anchor="w", padx=6, pady=(8, 0))
         ttk.Entry(detail, textvariable=self.manual, width=54).pack(padx=6, pady=2)
 
         buttons = ttk.Frame(detail)
         buttons.pack(fill="x", padx=6, pady=6)
-        ttk.Button(buttons, text="Use this", command=self._use_selection).pack(side="left")
-        ttk.Button(buttons, text="Ignore frame", command=self._ignore_selected).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Reset", command=self._reset_selected).pack(side="left")
+        ttk.Button(buttons, text=t("Use this"), command=self._use_selection).pack(side="left")
+        ttk.Button(buttons, text=t("Ignore frame"), command=self._ignore_selected).pack(side="left", padx=4)
+        ttk.Button(buttons, text=t("Reset"), command=self._reset_selected).pack(side="left")
 
-        self._apply_btn = ttk.Button(footer, text="Apply and write times",
+        self._apply_btn = ttk.Button(footer, text=t("Apply and write times"),
                                      style="Accent.TButton", command=self._apply)
         self._apply_btn.pack(side="right")
-        ttk.Button(footer, text="Cancel", command=self.destroy).pack(side="right", padx=4)
-        ttk.Button(footer, text="Read every frame instead (slow)",
+        ttk.Button(footer, text=t("Cancel"), command=self.destroy).pack(side="right", padx=4)
+        ttk.Button(footer, text=t("Read every frame instead (slow)"),
                    command=self._full_ocr).pack(side="left")
-        self._mark_region_btn = ttk.Button(footer, text="Mark clock position...",
+        self._mark_region_btn = ttk.Button(footer, text=t("Mark clock position..."),
                                            command=self._mark_region)
         self._mark_region_btn.pack(side="left", padx=(4, 0))
-        self._resample_btn = ttk.Button(footer, text="Re-sample clock (fresh OCR)...",
+        self._resample_btn = ttk.Button(footer, text=t("Re-sample clock (fresh OCR)..."),
                                         command=lambda: self._rescan_with_region(None))
         self._resample_btn.pack(side="left", padx=(4, 0))
 
@@ -2037,7 +2124,7 @@ class TimelineReviewDialog(tk.Toplevel):
             try:
                 pattern = timestamp_ocr.compile_custom_pattern(text)
             except ValueError as exc:
-                messagebox.showerror("Bad time pattern", str(exc), parent=self)
+                messagebox.showerror(t("Bad time pattern"), str(exc), parent=self)
                 return
 
         updated = []
@@ -2074,16 +2161,16 @@ class TimelineReviewDialog(tk.Toplevel):
         """Name and persist the box's current pattern for reuse later."""
         text = timestamp_ocr.strip_pattern_label(self.pattern_text.get())
         if not text:
-            messagebox.showinfo("Nothing to save", "Type or pick a pattern first.", parent=self)
+            messagebox.showinfo(t("Nothing to save"), t("Type or pick a pattern first."), parent=self)
             return
         try:
             timestamp_ocr.compile_custom_pattern(text)
         except ValueError as exc:
-            messagebox.showerror("Bad time pattern", str(exc), parent=self)
+            messagebox.showerror(t("Bad time pattern"), str(exc), parent=self)
             return
 
         from tkinter import simpledialog
-        name = simpledialog.askstring("Save time pattern", "Name for this pattern:", parent=self)
+        name = simpledialog.askstring(t("Save time pattern"), t("Name for this pattern:"), parent=self)
         if not name:
             return
         saved = timestamp_ocr.load_saved_patterns()
@@ -2097,7 +2184,7 @@ class TimelineReviewDialog(tk.Toplevel):
 
     def _show_pattern_help(self):
         messagebox.showinfo(
-            "Time pattern",
+            t("Time pattern"),
             "Pick one of the ready-made patterns from the list, or describe your "
             "camera's exact layout using these tokens (any other character, "
             "including spaces and punctuation, is matched literally):\n\n"
@@ -2180,7 +2267,7 @@ class TimelineReviewDialog(tk.Toplevel):
         sample = self._samples[self._selected]
         image_path = os.path.join(self.scan.folder, sample.name)
         if not os.path.isfile(image_path):
-            messagebox.showerror("Frame not found", f"Could not find {image_path}", parent=self)
+            messagebox.showerror(t("Frame not found"), f"Could not find {image_path}", parent=self)
             return
         FrameZoomDialog(self, image_path, f"{self.point}  {sample.name}",
                         region=self.scan.region)
@@ -2191,8 +2278,8 @@ class TimelineReviewDialog(tk.Toplevel):
         from dataclasses import replace
 
         if self._selected is None:
-            messagebox.showinfo("No frame selected",
-                                "Pick a row in the sampled frames list first.", parent=self)
+            messagebox.showinfo(t("No frame selected"),
+                                t("Pick a row in the sampled frames list first."), parent=self)
             return False
         self._samples[self._selected] = replace(self._samples[self._selected], **changes)
         return True
@@ -2202,8 +2289,8 @@ class TimelineReviewDialog(tk.Toplevel):
         from datetime import datetime  # lazy, matching this module's convention
 
         if self._selected is None:
-            messagebox.showinfo("No frame selected",
-                                "Pick a row in the sampled frames list first.", parent=self)
+            messagebox.showinfo(t("No frame selected"),
+                                t("Pick a row in the sampled frames list first."), parent=self)
             return
 
         text = self.manual.get().strip()
@@ -2211,7 +2298,7 @@ class TimelineReviewDialog(tk.Toplevel):
             try:
                 chosen = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
             except ValueError:
-                messagebox.showerror("Bad time", f"Could not read '{text}'. "
+                messagebox.showerror(t("Bad time"), f"Could not read '{text}'. "
                                      "Use YYYY-MM-DD HH:MM:SS.", parent=self)
                 return
         else:
@@ -2221,7 +2308,7 @@ class TimelineReviewDialog(tk.Toplevel):
                 return
             chosen = candidates[index].timestamp
             if chosen is None:
-                messagebox.showerror("Unreadable", "That reading did not parse as a time; "
+                messagebox.showerror(t("Unreadable"), "That reading did not parse as a time; "
                                      "type the correct one instead.", parent=self)
                 return
 
@@ -2251,8 +2338,8 @@ class TimelineReviewDialog(tk.Toplevel):
         if selected_only:
             selection = self.clips_tree.selection()
             if not selection:
-                messagebox.showinfo("No clip selected",
-                                    "Pick a clip row first, or use 'Shift all clips'.",
+                messagebox.showinfo(t("No clip selected"),
+                                    t("Pick a clip row first, or use 'Shift all clips'."),
                                     parent=self)
                 return
             clip = int(selection[0])
@@ -2265,7 +2352,7 @@ class TimelineReviewDialog(tk.Toplevel):
         from mash_reid import timeline
 
         if not self._fit.ok and not messagebox.askyesno(
-                "Fit looks wrong",
+                t("Fit looks wrong"),
                 "\n".join(self._fit.warnings) + "\n\nWrite these times anyway?",
                 parent=self):
             return
@@ -2282,7 +2369,7 @@ class TimelineReviewDialog(tk.Toplevel):
             timestamp_ocr.write_sidecar_doc(self.scan.folder, doc)
         except Exception as exc:
             log.warning("Could not write timestamps for %s", self.scan.folder, exc_info=True)
-            messagebox.showerror("Could not write times", str(exc), parent=self)
+            messagebox.showerror(t("Could not write times"), str(exc), parent=self)
             return
 
         self._app.status.set(
@@ -2295,7 +2382,7 @@ class TimelineReviewDialog(tk.Toplevel):
         if refresh is not None:
             refresh(self.point)
         messagebox.showinfo(
-            "Times written",
+            t("Times written"),
             f"Wrote {len(frames)} timestamp(s) for point {self.point}.\n\n"
             f"Click Process again to use the corrected times.", parent=self)
         self.destroy()
@@ -2308,7 +2395,7 @@ class TimelineReviewDialog(tk.Toplevel):
         -- the cases the "worst reading" warning flags.
         """
         if not messagebox.askyesno(
-                "Read every frame?",
+                t("Read every frame?"),
                 f"This reads the clock on all {len(self.scan.keys)} frames and can take "
                 f"many minutes. Use it only if the fitted clock above looks wrong.\n\n"
                 f"Continue?", parent=self):
@@ -2342,7 +2429,7 @@ class TimelineReviewDialog(tk.Toplevel):
                         self._app.status.set(payload)
                     elif kind == "error":
                         self._apply_btn.config(state="normal")
-                        messagebox.showerror("OCR failed", payload, parent=self)
+                        messagebox.showerror(t("OCR failed"), payload, parent=self)
                         return
                     elif kind == "done":
                         self._app.status.set(
@@ -2352,7 +2439,7 @@ class TimelineReviewDialog(tk.Toplevel):
                         if refresh is not None:
                             refresh(self.point)
                         messagebox.showinfo(
-                            "OCR complete",
+                            t("OCR complete"),
                             f"Read {payload}/{len(names)} timestamp(s).", parent=self)
                         self.destroy()
                         return
@@ -2373,12 +2460,12 @@ class TimelineReviewDialog(tk.Toplevel):
         pass on the next scan entirely, so it's faster as well as reliable.
         """
         if not self._samples:
-            messagebox.showinfo("No frame available",
-                                "There are no sampled frames to pick from.", parent=self)
+            messagebox.showinfo(t("No frame available"),
+                                t("There are no sampled frames to pick from."), parent=self)
             return
         image_path = os.path.join(self.scan.folder, self._samples[0].name)
         if not os.path.isfile(image_path):
-            messagebox.showerror("Frame not found", f"Could not find {image_path}", parent=self)
+            messagebox.showerror(t("Frame not found"), f"Could not find {image_path}", parent=self)
             return
 
         def on_done(region):
@@ -2401,7 +2488,7 @@ class TimelineReviewDialog(tk.Toplevel):
             custom_pattern = (timestamp_ocr.compile_custom_pattern(pattern_text)
                               if pattern_text else None)
         except ValueError as exc:
-            messagebox.showerror("Bad time pattern", str(exc), parent=self)
+            messagebox.showerror(t("Bad time pattern"), str(exc), parent=self)
             return
         sample_count = max(len(self._samples), 1)
 
@@ -2438,7 +2525,7 @@ class TimelineReviewDialog(tk.Toplevel):
                         self._apply_btn.config(state="normal")
                         self._mark_region_btn.config(state="normal")
                         self._resample_btn.config(state="normal")
-                        messagebox.showerror("Could not re-read timestamps", payload, parent=self)
+                        messagebox.showerror(t("Could not re-read timestamps"), payload, parent=self)
                         return
                     elif kind == "done":
                         self.scan = payload
@@ -2456,22 +2543,53 @@ class TimelineReviewDialog(tk.Toplevel):
         self.after(100, poll)
 
 
+def _set_window_icon(root):
+    """Title bar / taskbar icon, best-effort.
+
+    Both paths are tried because neither covers every platform: Windows takes
+    its taskbar and title-bar icon from a real .ico via ``iconbitmap`` and
+    ignores ``iconphoto`` for the title bar, while X11 and macOS read only the
+    ``iconphoto`` image and raise on ``iconbitmap``. Failure is silent by
+    design -- running without an icon is a cosmetic loss, not a reason to
+    refuse to start (a source checkout missing assets/, an unusual Tk build).
+
+    See ``tools/make_icon.py`` for the mark and how to regenerate it.
+    """
+    assets = os.path.join(_ROOT, "assets")
+    try:
+        # Kept on the root so Tk cannot garbage-collect the image out from
+        # under the window manager, which silently drops the icon.
+        root._icon_image = tk.PhotoImage(file=os.path.join(assets, "icon-64.png"))
+        root.iconphoto(True, root._icon_image)
+    except Exception:
+        log.debug("Could not set the window icon photo", exc_info=True)
+    try:
+        root.iconbitmap(os.path.join(assets, "icon.ico"))
+    except Exception:
+        log.debug("Could not set the window icon bitmap", exc_info=True)
+
+
 def main():
     log_path = logging_setup.setup_logging()
     root = tk.Tk()
-    root.title("Match-Vehicle-AI  |  Cross-Point Vehicle Re-ID")
-    # Before any widget is built: theme.apply swaps the ttk theme to clam and
-    # restyles the named default fonts, and widgets created beforehand would
-    # keep the old metrics until they were next reconfigured.
-    # The remembered scheme has to be installed before any widget is built,
-    # so read it straight from the settings file rather than waiting for
-    # ReIDApp to load it -- a widget created under one palette keeps that
-    # palette's literal colours until something repaints it.
+    # Language and scheme are installed before any widget exists, and read
+    # straight from the settings file rather than waiting for ReIDApp to load
+    # it: theme.apply swaps the ttk theme to clam and restyles the named
+    # default fonts, and a widget built beforehand keeps the old metrics and
+    # the old palette's literal colours until something repaints it.
     try:
-        saved_mode = settings.load().get("ui_theme", theme.DEFAULT_MODE)
+        saved_settings = settings.load()
     except Exception:
-        saved_mode = theme.DEFAULT_MODE
-    theme.apply(root, saved_mode if saved_mode in theme.PALETTES else theme.DEFAULT_MODE)
+        saved_settings = {}
+    saved_mode = saved_settings.get("ui_theme", theme.DEFAULT_MODE)
+    saved_lang = saved_settings.get("ui_language", i18n.DEFAULT_LANGUAGE)
+    # Language first: theme.apply resolves the font families for it, and the
+    # Thai faces are different families at a different size, not a restyle.
+    i18n.set_language(saved_lang)
+    theme.apply(root, saved_mode if saved_mode in theme.PALETTES else theme.DEFAULT_MODE,
+                i18n.current_language())
+    root.title(t("Match-Vehicle-AI  |  Cross-Point Vehicle Re-ID"))
+    _set_window_icon(root)
     root.geometry("1180x820")
     # Below this, the control rows (folder pickers, device/model status) no
     # longer have room to lay out without their text running past the
@@ -2490,4 +2608,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # A crash before or during window construction prints its traceback to a
+    # console that, when the app was double-clicked, closes with the process
+    # -- the user sees a window flash and has nothing to report. Logging it
+    # first means the details survive in logs/ regardless of how it was
+    # launched. Re-raised so the exit code is still non-zero and run.bat can
+    # hold its console open.
+    try:
+        main()
+    except Exception:
+        logging.getLogger("mash_reid.gui").exception("Startup failed")
+        raise

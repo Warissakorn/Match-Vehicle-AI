@@ -33,95 +33,21 @@ classic (non-ttk) widgets that hold a literal colour re-register through
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
 
 log = logging.getLogger("mash_reid.theme")
 
-# --- Palettes (genesisDESIGN_1.md "Colors") ---------------------------------
-#
-# Two of them. The document says outright: "Do provide sufficient contrast in
-# both light and dark modes -- test both", so a dark scheme is part of the
-# system rather than a departure from it. Dark is not the light palette with
-# background and text swapped -- that produces glaring text and an indigo too
-# dark to read as interactive. Instead:
-#
-#   * text is #F5F5F7 rather than pure white, and the darkest surface is
-#     #0A0A0B rather than pure black, following the document's rule against
-#     using #000000/#FFFFFF for text;
-#   * the accent moves up the indigo ramp (#6366F1 -> #818CF8) because the
-#     original reads as near-black against a dark surface;
-#   * because that lighter indigo is itself bright, text *on* it flips to the
-#     dark background colour -- hence ON_PRIMARY, which is the one token the
-#     document does not name but that a two-scheme port cannot do without
-#     (white on #818CF8 is about 2.5:1, far under the readable floor).
-#
-# SECONDARY is deliberately absent from both: the document reserves #20970B
-# strictly for one brand highlight on its own homepage, so there is nothing
-# here it applies to, and using it anyway would break the "indigo only for
-# interactive" rule it exists to protect.
+# Palettes live in their own module so tools and tests can read them without
+# a Tk build -- see app/palette.py. Its directory is put on sys.path here
+# rather than relying on the caller having done it, so `import theme` works
+# from anywhere (there is no app/__init__.py).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-LIGHT = {
-    "PRIMARY": "#6366F1",
-    "PRIMARY_HOVER": "#4F46E5",
-    "ON_PRIMARY": "#FFFFFF",
-    # Selection/pressed fill. Genesis specifies focus as a 3px translucent
-    # indigo ring, which Tk cannot draw (no alpha on widget borders), so the
-    # nearest opaque equivalent is used: a light indigo wash for selected rows
-    # and a solid indigo border on the focused widget.
-    "PRIMARY_WASH": "#EEEEFC",
-    "NEUTRAL": "#9C9C9C",
-    "BACKGROUND": "#FAFAFA",
-    "SURFACE": "#FFFFFF",
-    "TEXT": "#0A0A0A",
-    "TEXT_SECONDARY": "#6B6B6B",
-    "BORDER": "#E8E8EC",
-    "SUCCESS": "#10B981",
-    "WARNING": "#F59E0B",
-    "ERROR": "#EF4444",
-    # Darker siblings, for the semantic colours used as *text on a surface*.
-    # The document's own values are specified for status chips -- a coloured
-    # pill with dark text on it -- and only ever have to survive against that
-    # fill. As body text on white they measure 2.5:1 (success) and 2.2:1
-    # (warning), i.e. genuinely hard to read, which is exactly how the
-    # per-point timestamp lines came out. Chips keep the original values;
-    # anything drawn as coloured text uses these.
-    "SUCCESS_TEXT": "#047857",
-    "WARNING_TEXT": "#B45309",
-    "ERROR_TEXT": "#DC2626",
-    "DANGER_WASH": "#FEF2F2",
-    # Backdrop behind an image in the zoom viewer. Dark in *both* schemes on
-    # purpose: a photograph is judged against a neutral dark surround, and a
-    # white mat around a night-time CCTV frame washes it out.
-    "VIEWER_BACKDROP": "#0A0A0A",
-}
-
-DARK = {
-    "PRIMARY": "#818CF8",
-    "PRIMARY_HOVER": "#A5B4FC",
-    "ON_PRIMARY": "#0A0A0B",
-    "PRIMARY_WASH": "#2A2A45",
-    "NEUTRAL": "#6E6E76",
-    "BACKGROUND": "#0A0A0B",
-    "SURFACE": "#151518",
-    "TEXT": "#F5F5F7",
-    "TEXT_SECONDARY": "#A1A1A8",
-    "BORDER": "#2C2C33",
-    "SUCCESS": "#34D399",
-    "WARNING": "#FBBF24",
-    "ERROR": "#F87171",
-    # Already 6.5-11:1 against the dark surface, so the text variants are the
-    # same values -- darkening them here would make them *less* readable.
-    "SUCCESS_TEXT": "#34D399",
-    "WARNING_TEXT": "#FBBF24",
-    "ERROR_TEXT": "#F87171",
-    "DANGER_WASH": "#3A1D1D",
-    "VIEWER_BACKDROP": "#000000",
-}
-
-PALETTES = {"light": LIGHT, "dark": DARK}
-DEFAULT_MODE = "light"
+from palette import DARK, DEFAULT_MODE, LIGHT, PALETTES  # noqa: E402,F401
 
 # Module-level colour tokens, rebound by _install_palette() on every mode
 # change. Call sites read ``theme.SURFACE`` at *construction* time, so any
@@ -257,6 +183,35 @@ _BODY_FAMILIES = ("DM Sans", "Inter", "Segoe UI", "SF Pro Text",
 _CODE_FAMILIES = ("JetBrains Mono", "Cascadia Mono", "Consolas", "SF Mono",
                   "DejaVu Sans Mono", "Courier New")
 
+# Thai. The Genesis families carry no Thai glyphs at all, so in Thai the UI
+# would render as tofu boxes -- the script has to bring its own faces.
+# TH SarabunPSK first (the national-standard face, and what was asked for),
+# then its newer sibling, then whatever Thai-capable UI font the platform
+# ships.
+_THAI_FAMILIES = ("TH SarabunPSK", "TH Sarabun New", "Sarabun",
+                  "Leelawadee UI", "Tahoma", "Noto Sans Thai",
+                  "Noto Sans Thai UI", "Norasi", "Garuda")
+
+# Per-family optical size correction, keyed by lowercased family name.
+#
+# TH Sarabun is drawn on a much smaller body than a Latin UI face: at the same
+# nominal point size it reads roughly two-thirds the height of Segoe UI, which
+# is why Thai documents conventionally set it at 16pt where an English one
+# would use 11. Scaling the whole type scale by ~1.45 is what makes the Thai
+# UI come out the same visual size as the English one rather than noticeably
+# smaller -- the ratio, not any single size, is the thing being preserved.
+#
+# Families absent from this table are left at 1.0: Tahoma and Leelawadee UI
+# are normally proportioned, so applying Sarabun's correction to them would
+# make the fallback *larger* than the English UI instead of matching it.
+_FAMILY_SCALE = {
+    "th sarabunpsk": 1.45,
+    "th sarabun new": 1.45,
+    "sarabun": 1.20,
+    "norasi": 1.15,
+    "garuda": 1.10,
+}
+
 
 def _px_to_pt(px: int) -> int:
     """CSS pixels -> Tk points, the conversion the module docstring explains."""
@@ -287,27 +242,44 @@ class Fonts:
     every widget using it change together, which is not what a scale wants.
     """
 
-    def __init__(self, root: tk.Misc):
+    def __init__(self, root: tk.Misc, language: str = "en"):
         try:
             installed = set(tkfont.families(root))
         except Exception:  # pragma: no cover - only on a broken Tk install
             log.debug("Could not enumerate font families", exc_info=True)
             installed = set()
 
-        self.display_family = _pick_family(_DISPLAY_FAMILIES, installed, "TkDefaultFont")
-        self.body_family = _pick_family(_BODY_FAMILIES, installed, "TkDefaultFont")
+        if language == "th":
+            # One family for both roles in Thai: the display/body pairing is a
+            # Latin-typography distinction, and no Thai face here has a
+            # geometric sibling to pair it with. Weight still separates them.
+            thai = _pick_family(_THAI_FAMILIES, installed, "TkDefaultFont")
+            self.display_family = self.body_family = thai
+        else:
+            self.display_family = _pick_family(_DISPLAY_FAMILIES, installed, "TkDefaultFont")
+            self.body_family = _pick_family(_BODY_FAMILIES, installed, "TkDefaultFont")
         self.code_family = _pick_family(_CODE_FAMILIES, installed, "TkFixedFont")
+
+        # Sized off the *body* family, so a Thai UI in Sarabun comes out the
+        # same visual size as the English one -- see _FAMILY_SCALE.
+        self.scale = _FAMILY_SCALE.get(self.body_family.lower(), 1.0)
+
+        def pt(role):
+            return max(7, round(_px_to_pt(_SIZES_PX[role]) * self.scale))
 
         # Headings use the display family at bold weight; body/UI text uses
         # the body family. Genesis: "never swap them".
-        self.heading = (self.display_family, _px_to_pt(_SIZES_PX["heading"]), "bold")
-        self.subhead = (self.display_family, _px_to_pt(_SIZES_PX["subhead"]), "bold")
-        self.section = (self.display_family, _px_to_pt(_SIZES_PX["body"]), "bold")
-        self.body = (self.body_family, _px_to_pt(_SIZES_PX["body"]))
-        self.body_bold = (self.body_family, _px_to_pt(_SIZES_PX["body"]), "bold")
-        self.small = (self.body_family, _px_to_pt(_SIZES_PX["small"]))
-        self.caption = (self.body_family, _px_to_pt(_SIZES_PX["caption"]))
-        self.overline = (self.body_family, _px_to_pt(_SIZES_PX["overline"]), "bold")
+        self.heading = (self.display_family, pt("heading"), "bold")
+        self.subhead = (self.display_family, pt("subhead"), "bold")
+        self.section = (self.display_family, pt("body"), "bold")
+        self.body = (self.body_family, pt("body"))
+        self.body_bold = (self.body_family, pt("body"), "bold")
+        self.small = (self.body_family, pt("small"))
+        self.caption = (self.body_family, pt("caption"))
+        self.overline = (self.body_family, pt("overline"), "bold")
+        # Code keeps the Latin mono face and its own size: it renders file
+        # paths, clock times and the CPU/RAM readout, none of which are Thai,
+        # and a Thai body scale would blow the status bar out of proportion.
         self.code = (self.code_family, _px_to_pt(_SIZES_PX["small"]))
 
 
@@ -315,6 +287,10 @@ class Fonts:
 #: than hardcoding ``("TkDefaultFont", 8)`` at each call site, so the scale
 #: stays in one place.
 FONTS: Fonts | None = None
+
+#: Language the current :data:`FONTS` were resolved for, so ``apply`` knows
+#: whether a mode switch can reuse them or a language switch must rebuild.
+_FONT_LANGUAGE = "en"
 
 
 def set_mode(root: tk.Misc, mode: str) -> None:
@@ -330,7 +306,18 @@ def set_mode(root: tk.Misc, mode: str) -> None:
     _notify()
 
 
-def apply(root: tk.Misc, mode: str = DEFAULT_MODE) -> Fonts:
+def set_language(root: tk.Misc, language: str) -> None:
+    """Re-resolve the fonts for ``language`` and restyle in place.
+
+    Separate from ``i18n.set_language`` (which swaps the string catalog):
+    this is the typography half, and it is the reason a language switch is
+    not purely a text substitution -- the Genesis faces have no Thai glyphs,
+    so the whole scale has to be re-picked and re-sized.
+    """
+    apply(root, current_mode(), language)
+
+
+def apply(root: tk.Misc, mode: str = DEFAULT_MODE, language: str = "en") -> Fonts:
     """Install the Genesis styles on ``root`` and return the resolved fonts.
 
     Uses ``clam`` as the base theme: it is the only ttk theme present on all
@@ -354,10 +341,14 @@ def apply(root: tk.Misc, mode: str = DEFAULT_MODE) -> Fonts:
     except tk.TclError:  # pragma: no cover - clam ships with every Tk build
         log.warning("clam theme unavailable; colours will not apply")
 
-    # Fonts do not depend on the palette, so resolving them again on a mode
-    # switch would just re-scan the system font list for the same answer.
-    fonts = FONTS or Fonts(root)
-    FONTS = fonts
+    # Fonts do not depend on the palette, so a mode switch reuses them rather
+    # than re-scanning the system font list for the same answer. A *language*
+    # switch does need them rebuilt, which is what the family check catches.
+    global _FONT_LANGUAGE
+    if FONTS is None or language != _FONT_LANGUAGE:
+        FONTS = Fonts(root, language)
+        _FONT_LANGUAGE = language
+    fonts = FONTS
 
     # Default fonts, so untouched widgets (message boxes, file dialogs) still
     # follow the scale instead of standing out at Tk's own default size.
