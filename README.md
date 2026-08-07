@@ -542,6 +542,40 @@ user's launcher. It exists because `python -m py_compile` cannot catch an
 undefined name that is only resolved when the function runs — which is exactly
 what shipped.
 
+## Building a standalone .exe
+
+`run.bat` is enough for most use — it creates a `.venv` and launches with
+Python already there. If you'd rather hand someone a folder that runs without
+installing Python, package it with [PyInstaller](https://pyinstaller.org/):
+
+```bat
+run.bat        REM once, if you haven't -- creates .venv and installs deps
+build.bat
+```
+
+The result is `dist\MatchVehicleAI\MatchVehicleAI.exe`. **Copy the whole
+`dist\MatchVehicleAI\` folder**, not just the `.exe` — everything next to it
+is required (it's a `--onedir` build, not `--onefile`; see the comment at the
+top of `packaging/match_vehicle_ai.spec` for why: re-extracting a
+torch+ultralytics+easyocr+opencv bundle into a temp folder on every launch is
+slow and a common antivirus false-positive trigger).
+
+Model weights are **not** bundled — the built app downloads them into a
+`models\` folder next to the `.exe` on first run, same as running from
+source. `settings.json` also lands next to the `.exe`, so the built app keeps
+its own settings independent of the source checkout's.
+
+The build keeps a console window on purpose (see "When the app won't start"
+above) — a windowed/no-console build would bring back exactly the failure
+mode that section describes, just with no way to fix it since there'd be
+nothing printing the traceback. `logs\` still gets a copy of it regardless of
+console/windowed, but the console is what makes it visible immediately.
+
+If the build fails partway through with a missing-file error at runtime for a
+package not already handled in `packaging/match_vehicle_ai.spec`, PyInstaller's
+own docs cover diagnosing it; `pyinstaller --collect-all <package>` is the
+usual fix for "a dependency's data files didn't come along".
+
 ## Tests
 
 ```bash

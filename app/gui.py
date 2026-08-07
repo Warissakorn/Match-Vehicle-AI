@@ -50,6 +50,7 @@ from mash_reid import (  # noqa: E402
     matcher,
     model_manager,
     model_registry,
+    paths,
     pipeline,
     settings,
     sysmon,
@@ -2555,7 +2556,7 @@ def _set_window_icon(root):
 
     See ``tools/make_icon.py`` for the mark and how to regenerate it.
     """
-    assets = os.path.join(_ROOT, "assets")
+    assets = os.path.join(paths.resource_dir(), "assets")
     try:
         # Kept on the root so Tk cannot garbage-collect the image out from
         # under the window manager, which silently drops the icon.

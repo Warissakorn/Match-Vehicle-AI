@@ -1,0 +1,4 @@
+# Build-time only -- packages an .exe with PyInstaller. Not needed to run
+# the app from source (see requirements.txt for that); installed into the
+# same venv on demand by build.bat.
+pyinstaller>=6.3.0

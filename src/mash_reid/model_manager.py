@@ -20,7 +20,7 @@ import logging
 import os
 import shutil
 
-from mash_reid import model_registry
+from mash_reid import model_registry, paths
 
 log = logging.getLogger(__name__)
 
@@ -32,9 +32,7 @@ def default_models_dir() -> str:
     env = os.environ.get(_ENV_MODELS_DIR)
     if env:
         return env
-    # src/mash_reid/model_manager.py -> mash_reid -> src -> project root
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(root, "models")
+    return os.path.join(paths.writable_dir(), "models")
 
 
 def _key_of(model) -> str:

@@ -17,6 +17,8 @@ import os
 
 import config
 
+from mash_reid import paths
+
 log = logging.getLogger(__name__)
 
 # Whitelisted keys and their expected Python type. load() drops anything
@@ -48,9 +50,8 @@ _SCHEMA: dict[str, type] = {
 
 
 def default_path() -> str:
-    """``<project root>/settings.json`` -- next to ``config.py``."""
-    root = os.path.dirname(os.path.abspath(config.__file__))
-    return os.path.join(root, config.DEFAULT_SETTINGS_FILE)
+    """``settings.json`` next to the source tree, or next to the .exe when frozen."""
+    return os.path.join(paths.writable_dir(), config.DEFAULT_SETTINGS_FILE)
 
 
 def load(path: str | None = None) -> dict:
