@@ -26,18 +26,30 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller pyinstaller-hooks-contrib
 
+      # Produces dist/MatchVehicleAI/ (a folder, not a single .exe) -- see the
+      # header of tools/windows.spec for why onefile is the wrong shape here.
       - name: Build executable
         run: pyinstaller tools/windows.spec --noconfirm
+
+      # The app imports torch, ultralytics, easyocr and cv2 lazily, so a
+      # missing dependency would not surface until a user actually starts
+      # processing. Force each one to import now, while we can still fail
+      # the build, rather than shipping a package that only breaks in use.
+      - name: Verify bundled dependencies
+        run: dist/MatchVehicleAI/MatchVehicleAI.exe --selftest
+
+      - name: Package
+        run: Compress-Archive -Path dist/MatchVehicleAI -DestinationPath MatchVehicleAI-windows.zip
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: MatchVehicleAI-windows
-          path: dist/MatchVehicleAI.exe
+          path: MatchVehicleAI-windows.zip
           if-no-files-found: error
 
       - name: Attach to GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/MatchVehicleAI.exe
+          files: MatchVehicleAI-windows.zip
