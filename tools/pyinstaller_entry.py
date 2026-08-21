@@ -20,10 +20,41 @@ Run with:  python tools/pyinstaller_entry.py
 from __future__ import annotations
 
 import logging
+import sys
+
+# Heavy dependencies the app imports lazily, the first time detection runs.
+# That laziness is what keeps startup fast, but it also means a packaging
+# mistake in any of them stays invisible until a user clicks Process --
+# long after the build looked healthy. ``--selftest`` forces each one to
+# import so CI can prove the bundle is complete right after building it.
+_SELFTEST_MODULES = ("torch", "torchvision", "ultralytics", "easyocr", "cv2", "scipy.optimize")
+
+
+def _selftest() -> int:
+    import importlib
+
+    failed = []
+    for name in _SELFTEST_MODULES:
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            failed.append(f"{name}: {exc}")
+            print(f"FAIL  {name}: {exc}")
+        else:
+            print(f"ok    {name}")
+    if failed:
+        print(f"\n{len(failed)} bundled dependency/ies failed to import.")
+        return 1
+    print("\nAll bundled dependencies imported successfully.")
+    return 0
+
 
 from app.gui import main
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        raise SystemExit(_selftest())
+
     try:
         main()
     except Exception:
