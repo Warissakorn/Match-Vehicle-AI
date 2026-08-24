@@ -22,7 +22,14 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
 import config  # noqa: E402
-from mash_reid import logging_setup, matcher, model_registry, pipeline  # noqa: E402
+from mash_reid import (  # noqa: E402
+    app_paths,
+    logging_setup,
+    matcher,
+    model_registry,
+    pipeline,
+)
+import mash_reid.version as app_version  # noqa: E402
 
 
 def _fmt_ts(dt) -> str:
@@ -90,6 +97,8 @@ def _fit_folder(folder: str, point: str, device, show_progress,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Cross-point vehicle Re-ID (A vs B).")
+    parser.add_argument("--version", action="version",
+                        version=f"MatchVehicleAI {app_version.get_version()}")
     parser.add_argument("--dir-a", required=True, help="Folder of frames from point A")
     parser.add_argument("--dir-b", required=True, help="Folder of frames from point B")
     parser.add_argument("--threshold", type=float, default=config.DEFAULT_SIMILARITY_THRESHOLD)
@@ -141,8 +150,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="Also print DEBUG detail to the console")
     args = parser.parse_args(argv)
 
+    app_paths.apply_runtime_env()
+    log_dir = args.log_dir
+    if log_dir == logging_setup.DEFAULT_LOG_DIR:
+        # Only the default is relocated in a frozen build; an explicit
+        # --log-dir means the caller chose it deliberately.
+        log_dir = app_paths.logs_dir()
     log_path = logging_setup.setup_logging(
-        args.log_dir, console_level=logging.DEBUG if args.verbose else logging.INFO)
+        log_dir, console_level=logging.DEBUG if args.verbose else logging.INFO)
     print(f"Logging to {log_path}")
 
     pcfg = config.PipelineConfig(

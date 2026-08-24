@@ -20,7 +20,29 @@ Run with:  python tools/pyinstaller_entry.py
 from __future__ import annotations
 
 import logging
+import os
 import sys
+
+
+def _early_setup() -> None:
+    """Frozen-build bootstrap that must precede any heavy import.
+
+    ``apply_runtime_env`` exports TORCH_HOME / YOLO_CONFIG_DIR so torch and
+    ultralytics snapshot app-owned cache locations when first imported --
+    after import is too late, which is why this runs at module top rather
+    than inside main().
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for path in (root, os.path.join(root, "src")):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    from mash_reid import app_paths
+
+    app_paths.apply_runtime_env()
+
+
+_early_setup()
 
 # Heavy dependencies the app imports lazily, the first time detection runs.
 # That laziness is what keeps startup fast, but it also means a packaging
@@ -33,6 +55,9 @@ _SELFTEST_MODULES = ("torch", "torchvision", "ultralytics", "easyocr", "cv2", "s
 def _selftest() -> int:
     import importlib
 
+    from mash_reid import version as app_version
+
+    print(f"MatchVehicleAI {app_version.get_version()}")
     failed = []
     for name in _SELFTEST_MODULES:
         try:

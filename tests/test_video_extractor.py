@@ -70,7 +70,10 @@ def test_default_output_dir_uses_video_basename():
 def test_default_output_dir_multi_names_after_point():
     out = ve.default_output_dir_multi(
         ["/data/clip1.mp4", "/data/clip2.mp4"], "B")
-    assert out == "/data/B_frames"
+    # Compared via endswith (like its single-video sibling above) rather than
+    # equality: os.path.abspath resolves a POSIX-style path against the
+    # current drive on Windows, so only the tail is portable.
+    assert out.endswith(os.path.join("B_frames"))
 
 
 def test_extract_frames_missing_file_raises():
