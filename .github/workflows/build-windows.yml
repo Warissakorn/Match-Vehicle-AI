@@ -74,10 +74,10 @@ jobs:
             archive: "MatchVehicleAI-windows-cuda.7z"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -250,8 +250,13 @@ jobs:
           done
           echo "| extracted on disk | ${BUNDLE_MB} MB |" >> "$GITHUB_STEP_SUMMARY"
 
+      # v6, skipping v5: every action here is held to the lowest major that
+      # runs on Node 24, since Node 20 is deprecated on the runners. For
+      # checkout that is v5 and for setup-python v6, but upload-artifact's
+      # own v5 is still a Node 20 build, so this one has to go two majors to
+      # clear the same bar.
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: MatchVehicleAI${{ matrix.suffix }}
           path: ${{ matrix.archive }}*
@@ -261,7 +266,7 @@ jobs:
       # fired); both end up on the same release page.
       - name: Attach to GitHub release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ matrix.archive }}*
 
@@ -280,10 +285,10 @@ jobs:
     name: Inno Setup (thin installer)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -408,7 +413,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: MatchVehicleAI-windows-installer
           path: MatchVehicleAI-windows-installer.exe
@@ -416,6 +421,6 @@ jobs:
 
       - name: Attach to GitHub release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: MatchVehicleAI-windows-installer.exe
