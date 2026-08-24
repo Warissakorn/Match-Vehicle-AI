@@ -105,6 +105,14 @@ Type: filesandordirs; Name: "{app}\python"
 Type: filesandordirs; Name: "{app}\__pycache__"
 
 [Code]
+{ ISPP -- the preprocessor -- runs over this file before the Pascal compiler
+  and reads any line whose first non-blank character is '#' as one of its own
+  directives. A '#13#10' that begins a continuation line is therefore not a
+  character code but an unknown directive, and aborts the compile. Naming the
+  pair once keeps that '#' off the start of every line that needs a break. }
+const
+  NL = #13#10;
+
 function ProvisionEnvironment(): Boolean;
 var
   ResultCode: Integer;
@@ -134,10 +142,10 @@ begin
         wrapped message assembled without one is a compile error, not a
         long string. }
       MsgBox('Setup could not download and install the dependencies.' +
-             #13#10#13#10 +
+             NL + NL +
              'This step needs a working internet connection. The console ' +
              'window that just closed showed what failed.' +
-             #13#10#13#10 +
+             NL + NL +
              'Match-Vehicle-AI is not usable until setup completes ' +
              'successfully -- please re-run the installer, or use the ' +
              'self-contained MatchVehicleAI-windows.zip from the Releases ' +

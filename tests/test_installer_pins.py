@@ -229,3 +229,33 @@ def test_code_section_concatenates_strings_explicitly() -> None:
         f"{len(offenders)} pair(s) of adjacent string literals in [Code] -- "
         f"Pascal needs an explicit '+' between them"
     )
+
+
+def test_no_line_starts_with_a_character_code() -> None:
+    """No line begins with '#' unless it is a real ISPP directive.
+
+    ISPP runs over the whole .iss before the Pascal compiler and reads any
+    line whose first non-blank character is '#' as one of its directives. So
+    a '#13#10' wrapped onto its own continuation line is not a character
+    code -- it is a directive named "13", and the compile aborts during
+    preprocessing. The two hazards compound: fixing an adjacent-literal
+    error by breaking the line at the character code trades one compile
+    failure for the other, which is exactly how this arose.
+    """
+    directives = {
+        "define", "undef", "include", "if", "elif", "else", "endif",
+        "ifdef", "ifndef", "ifexist", "ifnexist", "error", "pragma",
+        "emit", "expr", "insert", "append", "sub", "endsub", "for",
+    }
+    bad = []
+    for number, line in enumerate(_read(_ISS).splitlines(), start=1):
+        stripped = line.lstrip()
+        if not stripped.startswith("#"):
+            continue
+        word = re.match(r"#\s*([A-Za-z_]\w*)", stripped)
+        if not word or word.group(1) not in directives:
+            bad.append(f"line {number}: {stripped[:40]}")
+    assert not bad, (
+        "line(s) starting with '#' that ISPP will not recognise as a "
+        f"directive: {bad}"
+    )
