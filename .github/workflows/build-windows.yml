@@ -137,34 +137,54 @@ jobs:
       # enough to act on. The numbers land in the run summary next to each
       # other, which is also what makes a size regression visible as it lands
       # rather than months later in a bug report about disk usage.
+      #
+      # Note the sort-to-file-then-head shape below rather than the obvious
+      # `sort | head`. Actions runs `shell: bash` with `set -eo pipefail`, so
+      # once head has taken its 25 lines and closed the pipe, sort dies of
+      # SIGPIPE and pipefail turns that into exit 141 -- failing the build on
+      # a step that had already produced the right answer.
       - name: Report bundle size
         shell: bash
+        # A size report is diagnostics, not a gate: nothing here can tell a
+        # good build from a bad one, so it must never be what stops a release
+        # from shipping.
+        continue-on-error: true
         run: |
           BUNDLE=dist/MatchVehicleAI
+          REPORT="$RUNNER_TEMP/sizes.txt"
           TOTAL=$(du -sm "$BUNDLE" | cut -f1)
-          echo "### Bundle size (${{ matrix.flavor }})" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Extracted on disk: **${TOTAL} MB**" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "<details><summary>Largest bundled packages</summary>" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Bundle size (${{ matrix.flavor }})"
+            echo ""
+            echo "Extracted on disk: **${TOTAL} MB**"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
           # -d 2 reaches _internal/<package>, which is the level a decision to
           # exclude something is actually made at.
-          du -m -d 2 "$BUNDLE" | sort -rn | head -25 >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "<details><summary>Largest individual files</summary>" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          du -m -d 2 "$BUNDLE" | sort -rn > "$REPORT"
+          {
+            echo "<details><summary>Largest bundled packages</summary>"
+            echo ""
+            echo '```'
+            head -25 "$REPORT"
+            echo '```'
+            echo "</details>"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
           # -exec du rather than find's -printf: the latter is a GNU
           # extension, and `find` on a Windows runner is only GNU find as
           # long as Git's usr/bin keeps winning over System32\find.exe.
-          find "$BUNDLE" -type f -exec du -m {} + | sort -rn | head -25 \
-            >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+          find "$BUNDLE" -type f -exec du -m {} + | sort -rn > "$REPORT"
+          {
+            echo "<details><summary>Largest individual files</summary>"
+            echo ""
+            echo '```'
+            head -25 "$REPORT"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # The CPU tree zips small (~350 MB); only the CUDA leg fights the cap.
       - name: Package CPU build (zip)
@@ -206,6 +226,7 @@ jobs:
       # moves the first number only, and excluding a package moves both.
       - name: Report archive size
         shell: bash
+        continue-on-error: true  # diagnostics, never a release gate
         run: |
           BUNDLE_MB=$(du -sm dist/MatchVehicleAI | cut -f1)
           {
