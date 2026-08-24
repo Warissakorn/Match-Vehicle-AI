@@ -78,14 +78,39 @@ run.bat
 ## Ready-to-run Windows builds
 
 Every tag (and any manual run of the *Build Windows executables* workflow)
-publishes two self-contained builds on the
+publishes three builds on the
 [Releases](https://github.com/Warissakorn/Match-Vehicle-AI/releases) page,
-built reproducibly from `requirements-lock.txt` on Python 3.14:
+all resolving the same pinned dependency set (`requirements-lock.txt` on
+Python 3.14):
 
-| Download | Torch build | Choose it when... |
-|----------|-------------|-------------------|
-| `MatchVehicleAI-windows.zip` | CPU-only | No NVIDIA GPU, or smallest download |
-| `MatchVehicleAI-windows-cuda.7z` | CUDA 12.6 (`torch+cu126`) | NVIDIA GPU with driver ≥ **527.41** |
+| Download | Size | Torch build | Choose it when... |
+|----------|------|-------------|-------------------|
+| `MatchVehicleAI-windows-installer.exe` | tens of MB | picked from your GPU during setup | You have internet during setup and want the small download |
+| `MatchVehicleAI-windows.zip` | ~350 MB | CPU-only | No internet during setup, no NVIDIA GPU |
+| `MatchVehicleAI-windows-cuda.7z` | ~2 GB | CUDA 12.6 (`torch+cu126`) | No internet during setup, NVIDIA GPU with driver ≥ **527.41** |
+
+**Which one?** If the machine has internet while you install, take the
+installer: it is the smallest download, it detects your GPU and fetches the
+matching PyTorch itself (so there is no wrong archive to pick), and it
+registers a normal Windows uninstaller. Take a zip/7z when setup has to work
+offline, or when a policy blocks fetching packages from PyPI.
+
+**What the installer does not do is make the app smaller.** The dependencies
+are the same either way — it downloads them during setup instead of shipping
+them as a release asset, so the disk footprint afterwards is comparable
+(roughly 1 GB on CPU, more with CUDA). What it saves is the release
+download, not the installed size. It needs a working internet connection
+while it runs, and can take several minutes — a CUDA environment pulls
+around 2.5 GB — with uv's and pip's progress shown in a console window while
+it works.
+
+The installer is per-user by default (no administrator prompt) and installs
+under `%LOCALAPPDATA%\Programs\MatchVehicleAI`; choose a machine-wide
+location during setup if you would rather. Uninstall from **Settings → Apps**
+as usual — that removes the program and its Python environment but keeps
+your models, settings and logs, so reinstalling does not re-download the
+~110 MB of model weights. Delete `%LOCALAPPDATA%\MatchVehicleAI` by hand to
+remove those too.
 
 The CUDA bundle is published as a single **`.7z`** archive: packed as an
 ordinary zip it would weigh ~2.7 GiB — over GitHub's hard 2 GiB per-release-
@@ -101,6 +126,13 @@ and the app still falls back to CPU automatically if no usable GPU is found.
 Otherwise the two builds are identical: same spec, same code, and each leg
 runs its dependency-import selftest (`--selftest`) plus the unit-test suite
 before it is packaged.
+
+The installer is held to the same bar despite resolving its wheels on your
+machine rather than in CI: every build performs a real silent install on a
+clean runner and then runs `--selftest` against what that produced, so a
+dependency that fails to install fails the release instead of reaching you.
+Setup repeats that check on your own machine once its downloads finish, and
+refuses to report success if it does not pass.
 
 **First run downloads the models** (~110 MB: YOLO detection weights, the
 ResNet50 embedder, EasyOCR's clock-reading models). The download starts in

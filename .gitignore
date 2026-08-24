@@ -37,6 +37,13 @@ assets/_build_version.txt
 build/
 dist/
 
+# Thin-installer build inputs/outputs. uv.exe is fetched into the repo root
+# by the workflow and baked into the installer; the .exe is what ISCC emits
+# there (see tools/installer/MatchVehicleAI.iss, OutputDir).
+uv.exe
+uv.zip
+MatchVehicleAI-windows-installer.exe
+
 # Sample / large media. The ** matters: a plain `samples/*.jpg` only matches
 # files directly in samples/, so frames sitting in the per-point subfolders
 # the extractor creates (samples/A/A1_frames_A/*.jpg) slipped past it and ~1 GB

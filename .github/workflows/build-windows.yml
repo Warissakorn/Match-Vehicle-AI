@@ -256,3 +256,152 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.archive }}*
+
+  # A third artifact on the same release, for people who would rather wait
+  # for the dependencies during setup than download them as a release asset:
+  # tens of megabytes instead of 350 MB / 2.7 GiB, with uv fetching the same
+  # pinned set from PyPI/pytorch.org while Setup runs, and the machine's own
+  # driver deciding whether that is the CPU or the CUDA torch.
+  #
+  # It does NOT supersede the packaged builds. What lands on disk is the same
+  # either way -- this route moves the download, it does not shrink it -- and
+  # it trades CI-verified bytes for a resolve on the user's machine that
+  # needs working internet. Offline, restricted, or air-gapped installs stay
+  # on the zip/7z, which is why all three ship.
+  installer:
+    name: Inno Setup (thin installer)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Cheap, and it is what stops the installer's pins from drifting away
+      # from the packaged builds' -- see tests/test_installer_pins.py.
+      - name: Run tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy scipy pytest
+          python -m pytest tests/ -q
+
+      # Same stamp as the packaged legs. It ships inside assets/, which the
+      # installer copies verbatim, so the installed app reports its version
+      # the same way a frozen build does.
+      - name: Stamp build version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VER="${GITHUB_REF_NAME}"
+          else
+            VER="0.0.0-dev.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "$VER" > assets/_build_version.txt
+          echo "value=$VER" >> "$GITHUB_OUTPUT"
+
+      # uv is the one dependency that cannot be fetched by the thing it
+      # bootstraps, so it is baked into the installer. Deliberately the
+      # latest release rather than a pin: a stale pin here fails the build
+      # outright, and uv's only jobs in this design -- fetch a CPython, make
+      # a venv, install pinned wheels -- are the parts of its surface least
+      # likely to move. The resolved version is echoed into the summary so a
+      # regression can be traced to it.
+      - name: Fetch uv
+        shell: bash
+        run: |
+          curl -fsSL -o uv.zip \
+            https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip
+          7z e -y uv.zip uv.exe > /dev/null
+          test -f uv.exe
+          echo "uv version: $(./uv.exe --version)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Inno Setup ships on the windows runner image, but the install path
+      # has moved between image versions -- resolve it rather than hardcode.
+      - name: Compile the installer
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem "C:\Program Files (x86)\Inno Setup*\ISCC.exe" `
+                    -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            $iscc = Get-ChildItem "C:\Program Files (x86)\Inno Setup*\ISCC.exe" |
+                      Select-Object -First 1
+          }
+          & $iscc.FullName /DAppVersion=${{ steps.version.outputs.value }} `
+              tools\installer\MatchVehicleAI.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      # The reason a thin installer is defensible at all. The packaged legs
+      # prove their bundle by running --selftest on the tree they are about
+      # to ship; an installer whose environment is resolved on the user's
+      # machine has no such guarantee, so CI performs a real silent install
+      # here and then exercises what it produced. Without this step the first
+      # person to run the installer would be the first person to test it.
+      - name: Install it, for real
+        shell: pwsh
+        run: |
+          $target = "$env:RUNNER_TEMP\mvai"
+          $proc = Start-Process -FilePath ".\MatchVehicleAI-windows-installer.exe" `
+            -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$target",`
+                          "/LOG=$env:RUNNER_TEMP\setup.log" `
+            -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 80
+            throw "Setup exited with $($proc.ExitCode)"
+          }
+          # Setup reports provisioning failure through a message box, which
+          # /SUPPRESSMSGBOXES swallows -- so a silent install can "succeed"
+          # with no environment. Check for the environment itself rather than
+          # trusting the exit code.
+          $py = "$target\env\Scripts\python.exe"
+          if (-not (Test-Path $py)) {
+            Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 80
+            throw "Setup finished but built no Python environment"
+          }
+          & $py "$target\tools\pyinstaller_entry.py" --selftest
+          if ($LASTEXITCODE -ne 0) { throw "the installed app failed its self-test" }
+
+      # Proves the stamp survived the installer the same way the packaged
+      # legs prove it survived PyInstaller.
+      - name: Check stamped version
+        shell: bash
+        run: |
+          OUT=$("$RUNNER_TEMP/mvai/env/Scripts/python.exe" \
+                "$RUNNER_TEMP/mvai/tools/pyinstaller_entry.py" --version)
+          echo "installed app reports: $OUT"
+          [[ "$OUT" == *"MatchVehicleAI ${{ steps.version.outputs.value }}"* ]] || {
+            echo "::error::the installed app did not report the stamped version"; exit 1; }
+
+      # The number this artifact exists for, next to what it actually costs
+      # once installed -- the two differ by more than an order of magnitude
+      # here, which is the whole point and also the thing most likely to be
+      # misread.
+      - name: Report installer size
+        shell: bash
+        continue-on-error: true  # diagnostics, never a release gate
+        run: |
+          DOWNLOAD=$(du -sm MatchVehicleAI-windows-installer.exe | cut -f1)
+          INSTALLED=$(du -sm "$RUNNER_TEMP/mvai" | cut -f1)
+          {
+            echo ""
+            echo "| thin installer | size |"
+            echo "|---|---|"
+            echo "| download | ${DOWNLOAD} MB |"
+            echo "| installed on disk (CPU torch) | ${INSTALLED} MB |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MatchVehicleAI-windows-installer
+          path: MatchVehicleAI-windows-installer.exe
+          if-no-files-found: error
+
+      - name: Attach to GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: MatchVehicleAI-windows-installer.exe
