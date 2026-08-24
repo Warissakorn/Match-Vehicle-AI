@@ -43,7 +43,7 @@ import sys
 # 12.6 build runs on *any* driver from the published 12.x floor upward --
 # including the newest -- so one entry covers every machine that can run a
 # CUDA-12 wheel at all, and it is the same wheel line the released
-# ``-windows-cuda.zip`` build ships with. A driver older than the floor gets
+# ``-windows-cuda.7z`` build ships with. A driver older than the floor gets
 # no wheel: PyTorch no longer publishes the old cu118 line those machines
 # would once have fallen back to, so installing anything would produce the
 # exact "installs fine, CUDA unavailable" failure this helper exists to

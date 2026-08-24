@@ -3,14 +3,23 @@ name: Build Windows executables
 # Two artifacts per run, built from one pinned environment
 # (requirements-lock.txt + Python 3.14):
 #
-#   MatchVehicleAI-windows.zip       -- CPU-only torch; runs anywhere.
-#   MatchVehicleAI-windows-cuda.zip  -- torch+cu126 wheels; GPU-accelerated
-#                                       detection/embedding/OCR on any NVIDIA
-#                                       driver >= 527.41 (CUDA-12 minor-version
-#                                       compatibility), falls back to CPU code
-#                                       paths otherwise. Roughly double the
-#                                       download size because the CUDA DLLs are
-#                                       bundled.
+#   MatchVehicleAI-windows.zip      -- CPU-only torch; runs anywhere. Plain zip;
+#                                      small enough not to care about format.
+#   MatchVehicleAI-windows-cuda.7z  -- torch+cu126 wheels; GPU-accelerated
+#                                      detection/embedding/OCR on any NVIDIA
+#                                      driver >= 527.41 (CUDA-12 minor-version
+#                                      compatibility), falls back to CPU code
+#                                      paths otherwise. Roughly double the
+#                                      download size because the CUDA DLLs are
+#                                      bundled.
+#
+# Why the CUDA bundle is a single .7z and not a zip: GitHub caps every release
+# asset at 2 GiB per file, and a plain zip of the CUDA tree is ~2.7 GiB -- it
+# had to be byte-split into .zip.1/.zip.2 parts that users rejoined with
+# "copy /b". 7z/LZMA2 (-mx=9, solid) compresses the highly repetitive cudnn /
+# cublas DLLs far better than Deflate and lands the whole bundle under the cap
+# as exactly ONE downloadable file. Extracting needs Windows 11 File Explorer
+# (native .7z support), 7-Zip or WinRAR -- documented in the README.
 #
 # The app picks CUDA up on its own when torch reports it available, so the two
 # builds differ only in which torch wheel went in -- same spec, same code.
@@ -49,10 +58,12 @@ jobs:
             torch_packages: "torch==2.13.0 torchvision==0.28.0"
             torch_index_args: ""
             suffix: "-windows"
+            archive: "MatchVehicleAI-windows.zip"
           - flavor: cuda
             torch_packages: "torch==2.13.0+cu126 torchvision==0.28.0+cu126"
             torch_index_args: "--index-url https://download.pytorch.org/whl/cu126"
             suffix: "-windows-cuda"
+            archive: "MatchVehicleAI-windows-cuda.7z"
 
     steps:
       - uses: actions/checkout@v4
@@ -114,40 +125,50 @@ jobs:
           [[ "$OUT" == *"MatchVehicleAI $(cat assets/_build_version.txt)" ]] || {
             echo "::error::exe did not report the stamped version"; exit 1; }
 
-      - name: Package
+      # The CPU tree zips small (~350 MB); only the CUDA leg fights the cap.
+      - name: Package CPU build (zip)
+        if: matrix.flavor == 'cpu'
         run: Compress-Archive -Path dist/MatchVehicleAI `
-            -DestinationPath "MatchVehicleAI${{ matrix.suffix }}.zip"
+            -DestinationPath "${{ matrix.archive }}"
 
-      # Release assets are hard-capped at 2 GiB per file and the CUDA bundle
-      # exceeds that (~2.7 GiB -- the CUDA DLLs dwarf everything else), so any
-      # oversize zip is byte-split into .1/.2 parts. The parts are plain
-      # concatenated chunks of the original archive: joining them back with
-      # "copy /b ...zip.1+...zip.2 ...zip" restores an ordinary zip (see the
-      # README's ready-to-run section for the exact commands).
-      - name: Split oversize zip for the release asset limit
+      # GitHub caps every release asset at 2 GiB per file and a plain zip of
+      # the CUDA tree is ~2.7 GiB (the cudnn/cublas DLLs dwarf everything
+      # else), so this leg archives with 7z/LZMA2 instead: -mx=9 for max
+      # effort, a 256 MiB dictionary so far-apart repeats in the multi-hundred-
+      # MB DLLs still match, and a solid archive with -mqs=on to sort similar
+      # files adjacently. Together that lands the bundle under the cap as ONE
+      # downloadable file instead of split parts users had to rejoin with
+      # "copy /b". Extracting needs Win11 File Explorer / 7-Zip / WinRAR.
+      #
+      # Safety net: if dependency growth ever pushes the .7z back over the cap,
+      # byte-split it like before rather than failing the release -- with a
+      # loud warning so the regression gets noticed. The parts rejoin with
+      # "copy /b ...cuda.7z.1+...cuda.7z.2 ...cuda.7z".
+      - name: Package CUDA build (single-file 7z under the 2 GiB asset cap)
+        if: matrix.flavor == 'cuda'
         shell: bash
         run: |
-          ZIP="MatchVehicleAI${{ matrix.suffix }}.zip"
-          SIZE=$(wc -c < "$ZIP")
-          if [ "$SIZE" -lt 2147483648 ]; then
-            echo "$ZIP is $SIZE bytes -- under the limit, keeping it whole"
-          else
-            echo "$ZIP is $SIZE bytes -- over the 2 GiB asset limit, splitting"
-            split -b 1900m --numeric-suffixes=1 -a 1 "$ZIP" "$ZIP."
-            rm "$ZIP"  # the artifact/upload globs below must match only the parts
+          ARCHIVE="${{ matrix.archive }}"
+          7z a -t7z -mx=9 -md=256m -mqs=on -bso0 -bsp0 "$ARCHIVE" dist/MatchVehicleAI
+          SIZE=$(wc -c < "$ARCHIVE")
+          echo "$ARCHIVE is $SIZE bytes"
+          if [ "$SIZE" -ge 2147483648 ]; then
+            echo "::warning::$ARCHIVE is $SIZE bytes -- back over the 2 GiB cap; splitting into parts as a fallback"
+            split -b 1900m --numeric-suffixes=1 -a 1 "$ARCHIVE" "$ARCHIVE."
+            rm "$ARCHIVE"  # the artifact/upload globs below must match only the parts
           fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: MatchVehicleAI${{ matrix.suffix }}
-          path: MatchVehicleAI${{ matrix.suffix }}.zip*
+          path: ${{ matrix.archive }}*
           if-no-files-found: error
 
-      # Each leg attaches its own zip (or its split parts); both end up on the
-      # same release page.
+      # Each leg attaches its own archive (or split parts if the fallback
+      # fired); both end up on the same release page.
       - name: Attach to GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: MatchVehicleAI${{ matrix.suffix }}.zip*
+          files: ${{ matrix.archive }}*

@@ -85,17 +85,15 @@ built reproducibly from `requirements-lock.txt` on Python 3.14:
 | Download | Torch build | Choose it when... |
 |----------|-------------|-------------------|
 | `MatchVehicleAI-windows.zip` | CPU-only | No NVIDIA GPU, or smallest download |
-| `MatchVehicleAI-windows-cuda.zip.1` + `.2` | CUDA 12.6 (`torch+cu126`) | NVIDIA GPU with driver ≥ **527.41** |
+| `MatchVehicleAI-windows-cuda.7z` | CUDA 12.6 (`torch+cu126`) | NVIDIA GPU with driver ≥ **527.41** |
 
-The CUDA bundle exceeds GitHub's 2 GiB per-file release limit, so it is
-published as two split parts of one zip. Download both into the same folder,
-join them back, then unzip:
-
-```bat
-copy /b MatchVehicleAI-windows-cuda.zip.1+MatchVehicleAI-windows-cuda.zip.2 MatchVehicleAI-windows-cuda.zip
-```
-
-Unzip anywhere and run `MatchVehicleAI.exe`. The CUDA build is roughly twice
+The CUDA bundle is published as a single **`.7z`** archive: packed as an
+ordinary zip it would weigh ~2.7 GiB — over GitHub's hard 2 GiB per-release-
+file limit — so it is compressed with 7z/LZMA2 instead, which fits the whole
+bundle under the cap as exactly one downloadable file. Nothing to join back
+together. Windows 11's built-in File Explorer extracts `.7z` natively; on
+older systems install [7-Zip](https://www.7-zip.org/) or use WinRAR. Extract
+anywhere and run `MatchVehicleAI.exe`. The CUDA build is roughly twice
 the download because the CUDA runtime DLLs ship inside it; through CUDA's
 minor-version compatibility that same wheel serves every driver from 527.41
 upward — there is no need to match it against your exact driver version —
@@ -536,7 +534,7 @@ pip uninstall torch torchvision
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
 
-(Or skip all of this by using the ready-made `MatchVehicleAI-windows-cuda.zip`
+(Or skip all of this by using the ready-made `MatchVehicleAI-windows-cuda.7z`
 from the Releases page — see "Ready-to-run Windows builds" above.)
 
 ## Detection models
