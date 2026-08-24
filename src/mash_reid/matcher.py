@@ -121,51 +121,147 @@ def match(
     to ``cfg.top_k`` accepted candidates ranked by similarity. When
     ``cfg.one_to_one`` is set, a global one-to-one assignment (Hungarian) is
     computed first and each A keeps at most that single partner.
+
+    The similarity matrix is materialised **one row-block at a time** rather
+    than all at once. At a real gallery size (3,670 x 12,557) the old dense
+    path held the float32 similarities *and* the boolean gate mask *and* the
+    ``np.where`` result simultaneously -- three full-size allocations for data
+    only ever consumed a row at a time. Blocking keeps peak memory at one
+    block (~20 MB at 1024 rows) regardless of gallery size, with identical
+    output; see ``_gated_block``.
     """
     cfg = cfg or config.MatchConfig()
 
-    emb_a = np.stack([r.embedding for r in records_a]) if records_a else np.zeros((0, 1))
-    emb_b = np.stack([r.embedding for r in records_b]) if records_b else np.zeros((0, 1))
+    if not records_a:
+        return []
+    if not records_b:
+        return [MatchResult(a_record_id=r.record_id, candidates=[]) for r in records_a]
 
-    sim = cosine_similarity_matrix(emb_a, emb_b)
+    emb_a = np.stack([r.embedding for r in records_a]).astype(np.float32)
+    emb_b = np.stack([r.embedding for r in records_b]).astype(np.float32)
 
-    # Apply the temporal gate by driving disallowed pairs to -inf so they can
-    # never be selected or pass the threshold.
-    if cfg.use_time_gate and sim.size:
-        mask = time_gate_mask(
-            [r.timestamp for r in records_a],
-            [r.timestamp for r in records_b],
-            cfg.min_travel_seconds,
-            cfg.max_travel_seconds,
-        )
-        sim = np.where(mask, sim, -np.inf)
+    times_a = [r.timestamp for r in records_a]
+    times_b = [r.timestamp for r in records_b]
+    sec_b = _relative_seconds(times_b, times_a[0])
 
-    if cfg.one_to_one and sim.size and np.isfinite(sim).any():
-        return _match_one_to_one(records_a, records_b, sim, cfg)
+    if cfg.one_to_one:
+        cost, any_finite = _build_cost_matrix(
+            emb_a, emb_b, times_a, sec_b, cfg)
+        if any_finite:
+            return _match_one_to_one(records_a, records_b, cost, cfg)
 
-    return _match_top_k(records_a, records_b, sim, cfg)
+    return _match_top_k_streaming(emb_a, emb_b, times_a, sec_b, records_a,
+                                  records_b, cfg)
 
 
-def _match_top_k(
+#: Rows of A processed per streaming block. Bounds the block's memory at
+#: ``_ROW_BLOCK x len(B) x 4`` bytes -- ~50 MB against a 12k-record B gallery.
+_ROW_BLOCK = 1024
+
+
+def _relative_seconds(times: list[datetime], origin: datetime) -> np.ndarray:
+    """Timestamps as float32 seconds relative to ``origin``.
+
+    Float32 near the Unix epoch resolves to ~128 s -- useless for travel-time
+    comparisons -- while offsets from a common origin stay well under a day,
+    where float32 resolves to milliseconds. See ``time_gate_mask``.
+    """
+    return np.fromiter(((t - origin).total_seconds() for t in times),
+                       dtype=np.float32, count=len(times))
+
+
+def _gated_block(
+    emb_a_block: np.ndarray,
+    sec_a_block: np.ndarray,
+    emb_b: np.ndarray,
+    sec_b: np.ndarray,
+    use_time_gate: bool,
+    min_travel_seconds: float,
+    max_travel_seconds: float,
+) -> np.ndarray:
+    """Similarities for one block of A rows, gated pairs driven to ``-inf``.
+
+    This is the per-block equivalent of ``cosine_similarity_matrix`` followed
+    by ``np.where(mask, sim, -inf)``, computed against a slice of A so no
+    full-gallery temporary ever exists. Gated-out values become ``-inf``
+    (not merely masked) so neither ranking nor the threshold test can pick
+    them, exactly as before.
+    """
+    sim = emb_a_block @ emb_b.T
+    if use_time_gate:
+        delta = sec_b[None, :] - sec_a_block[:, None]
+        sim[(delta < min_travel_seconds) | (delta > max_travel_seconds)] = -np.inf
+    return sim
+
+
+def _blocks(n: int):
+    """Yield ``(start, stop)`` row ranges of at most ``_ROW_BLOCK`` rows."""
+    for start in range(0, n, _ROW_BLOCK):
+        yield start, min(start + _ROW_BLOCK, n)
+
+
+def _match_top_k_streaming(
+    emb_a: np.ndarray,
+    emb_b: np.ndarray,
+    times_a: list[datetime],
+    sec_b: np.ndarray,
     records_a: list[VehicleRecord],
     records_b: list[VehicleRecord],
-    sim: np.ndarray,
     cfg: config.MatchConfig,
 ) -> list[MatchResult]:
     results: list[MatchResult] = []
-    for i, rec_a in enumerate(records_a):
-        candidates: list[MatchCandidate] = []
-        if sim.shape[1] > 0:
-            order = np.argsort(-sim[i])  # descending similarity
+    origin = times_a[0]
+    for start, stop in _blocks(len(records_a)):
+        sec_blk = _relative_seconds(times_a[start:stop], origin)
+        sim_blk = _gated_block(emb_a[start:stop], sec_blk, emb_b, sec_b,
+                               cfg.use_time_gate, cfg.min_travel_seconds,
+                               cfg.max_travel_seconds)
+        for offset, rec_a in enumerate(records_a[start:stop]):
+            row = sim_blk[offset]
+            candidates: list[MatchCandidate] = []
+            order = np.argsort(-row)  # descending similarity
             for j in order[: cfg.top_k]:
-                score = float(sim[i, j])
+                score = float(row[j])
                 if not np.isfinite(score) or score < cfg.similarity_threshold:
                     continue
                 candidates.append(
                     MatchCandidate(b_record_id=records_b[j].record_id, similarity=score)
                 )
-        results.append(MatchResult(a_record_id=rec_a.record_id, candidates=candidates))
+            results.append(MatchResult(a_record_id=rec_a.record_id, candidates=candidates))
     return results
+
+
+def _build_cost_matrix(
+    emb_a: np.ndarray,
+    emb_b: np.ndarray,
+    times_a: list[datetime],
+    sec_b: np.ndarray,
+    cfg: config.MatchConfig,
+) -> tuple[np.ndarray, bool]:
+    """Hungarian cost matrix built one block at a time.
+
+    ``linear_sum_assignment`` needs the whole matrix up front -- that part is
+    unavoidable -- but building it blockwise folds the gate mask into the
+    fill instead of allocating separate mask/``where`` temporaries beside it.
+    Returns ``(cost, any_finite)``; an all-gated problem has no meaningful
+    assignment and the caller falls back to top-k, matching the old
+    ``np.isfinite(sim).any()`` guard.
+    """
+    big = 1e6
+    cost = np.empty((len(emb_a), len(emb_b)), dtype=np.float32)
+    any_finite = False
+    origin = times_a[0]
+    for start, stop in _blocks(len(emb_a)):
+        sec_blk = _relative_seconds(times_a[start:stop], origin)
+        blk = _gated_block(emb_a[start:stop], sec_blk, emb_b, sec_b,
+                           cfg.use_time_gate, cfg.min_travel_seconds,
+                           cfg.max_travel_seconds)
+        finite = np.isfinite(blk)
+        any_finite |= bool(finite.any())
+        blk[~finite] = big
+        np.negative(blk, out=blk, where=finite)
+        cost[start:stop] = blk
+    return cost, any_finite
 
 
 def cluster_same_point(
@@ -186,18 +282,7 @@ def cluster_same_point(
     if n == 0:
         return {}
 
-    emb = np.stack([r.embedding for r in records])
-    sim = cosine_similarity_matrix(emb, emb)
-
-    # Find qualifying (i, j) pairs with numpy rather than a Python-level n^2
-    # loop: with thousands of vehicles per point (real gallery sizes seen in
-    # the field run into the tens of thousands) a pure-Python double loop is
-    # tens of millions of iterations and freezes the caller for minutes.
-    # np.triu + np.nonzero do the same n^2 work in C, and -- since genuine
-    # repeat sightings are a small fraction of all pairs -- return only the
-    # handful of qualifying pairs for the Python union-find loop below.
-    above_threshold = np.triu(sim >= similarity_threshold, k=1)
-    pairs_i, pairs_j = np.nonzero(above_threshold)
+    emb = np.stack([r.embedding for r in records]).astype(np.float32)
 
     # Union-find over indices connected by similarity >= threshold.
     parent = list(range(n))
@@ -213,8 +298,23 @@ def cluster_same_point(
         if ra != rb:
             parent[ra] = rb
 
-    for i, j in zip(pairs_i.tolist(), pairs_j.tolist()):
-        union(i, j)
+    # Find qualifying (i, j) pairs with numpy rather than a Python-level n^2
+    # loop: with thousands of vehicles per point (real gallery sizes seen in
+    # the field run into the tens of thousands) a pure-Python double loop is
+    # tens of millions of iterations and freezes the caller for minutes.
+    # The similarity pass runs one row-block at a time (as in ``match``), and
+    # each block keeps only its strict-upper-triangle pairs above threshold --
+    # since genuine repeat sightings are a small fraction of all pairs, only
+    # the handful of qualifying indices ever reach the Python union-find loop.
+    # Union-find is order-independent, so visiting pairs block-by-block gives
+    # exactly the clusters the old full-matrix np.triu walk produced.
+    cols = np.arange(n)
+    for start, stop in _blocks(n):
+        blk = emb[start:stop] @ emb.T
+        upper = cols[None, :] > np.arange(start, stop)[:, None]
+        pairs_local, pairs_j = np.nonzero((blk >= similarity_threshold) & upper)
+        for offset, j in zip(pairs_local.tolist(), pairs_j.tolist()):
+            union(start + offset, int(j))
 
     root_to_cluster: dict[int, int] = {}
     result: dict[int, int] = {}
@@ -229,15 +329,21 @@ def cluster_same_point(
 def _match_one_to_one(
     records_a: list[VehicleRecord],
     records_b: list[VehicleRecord],
-    sim: np.ndarray,
+    cost: np.ndarray,
     cfg: config.MatchConfig,
 ) -> list[MatchResult]:
+    """Hungarian assignment over the prebuilt cost matrix (see
+    ``_build_cost_matrix``).
+
+    The solver always returns a complete assignment -- gated-out pairs carry
+    the large sentinel cost ``1e6``, far outside cosine similarity's
+    ``[-1, 1]`` -- so an assigned pair is only reported when its cost is a
+    real similarity at or above the threshold, which is exactly what the old
+    ``np.isfinite(sim[i, j])`` test said.
+    """
     from scipy.optimize import linear_sum_assignment
 
-    # Hungarian minimizes cost; use a large finite cost for gated-out pairs so
-    # the solver still returns a complete assignment.
     big = 1e6
-    cost = np.where(np.isfinite(sim), -sim, big)
     row_ind, col_ind = linear_sum_assignment(cost)
     assigned: dict[int, int] = {int(r): int(c) for r, c in zip(row_ind, col_ind)}
 
@@ -245,11 +351,11 @@ def _match_one_to_one(
     for i, rec_a in enumerate(records_a):
         candidates: list[MatchCandidate] = []
         j = assigned.get(i)
-        if j is not None and j < sim.shape[1]:
-            score = float(sim[i, j])
-            if np.isfinite(score) and score >= cfg.similarity_threshold:
+        if j is not None and j < cost.shape[1]:
+            c = float(cost[i, j])
+            if c < big and -c >= cfg.similarity_threshold:
                 candidates.append(
-                    MatchCandidate(b_record_id=records_b[j].record_id, similarity=score)
+                    MatchCandidate(b_record_id=records_b[j].record_id, similarity=-c)
                 )
         results.append(MatchResult(a_record_id=rec_a.record_id, candidates=candidates))
     return results
