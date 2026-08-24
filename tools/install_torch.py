@@ -34,25 +34,26 @@ import re
 import subprocess
 import sys
 
-# Minimum NVIDIA driver version for each CUDA runtime, from NVIDIA's CUDA
-# release notes ("CUDA Toolkit and Corresponding Driver Versions"). Ordered
-# newest-first: the first entry whose floor the driver clears wins.
+# Minimum NVIDIA driver version per CUDA wheel line we install, from NVIDIA's
+# CUDA release notes ("CUDA Toolkit and Corresponding Driver Versions").
 #
-# These are the *native* minimums. CUDA's minor-version compatibility means a
-# 12.4 build would in practice also run on a 12.0-era driver, but tiering on
-# the published floors keeps the choice conservative -- picking a slightly
-# older wheel costs nothing, while guessing too new is exactly the failure
-# this module exists to prevent.
+# One tier per platform these days, and that is deliberate: current PyTorch
+# publishes its CUDA-12 wheels as ``cu126`` only (plus ``cu130`` on the
+# CUDA-13 driver generation). Through CUDA's minor-version compatibility a
+# 12.6 build runs on *any* driver from the published 12.x floor upward --
+# including the newest -- so one entry covers every machine that can run a
+# CUDA-12 wheel at all, and it is the same wheel line the released
+# ``-windows-cuda.zip`` build ships with. A driver older than the floor gets
+# no wheel: PyTorch no longer publishes the old cu118 line those machines
+# would once have fallen back to, so installing anything would produce the
+# exact "installs fine, CUDA unavailable" failure this helper exists to
+# prevent.
 _CUDA_TIERS = {
     "Windows": [
-        ((551, 61), "cu124"),
-        ((527, 41), "cu121"),
-        ((452, 39), "cu118"),
+        ((527, 41), "cu126"),
     ],
     "Linux": [
-        ((550, 54), "cu124"),
-        ((525, 60), "cu121"),
-        ((450, 80), "cu118"),
+        ((525, 60), "cu126"),
     ],
 }
 
