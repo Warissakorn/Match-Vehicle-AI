@@ -134,6 +134,7 @@ jobs:
           else
             echo "$ZIP is $SIZE bytes -- over the 2 GiB asset limit, splitting"
             split -b 1900m --numeric-suffixes=1 -a 1 "$ZIP" "$ZIP."
+            rm "$ZIP"  # the artifact/upload globs below must match only the parts
           fi
 
       - name: Upload build artifact
