@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import pickle
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -151,8 +152,69 @@ def process_point(
 
 
 def build_pipeline(cfg: config.PipelineConfig | None = None):
-    """Convenience factory returning (detector, embedder) sharing one config."""
+    """Convenience factory returning (detector, embedder) sharing one config.
+
+    One-shot callers (the CLI) want this. Long-lived callers (the GUI) want
+    :func:`get_pipeline`, which keeps the models resident across runs.
+    """
     cfg = cfg or config.PipelineConfig()
     detector = VehicleDetector(cfg)
     embedder = get_default_embedder(device=cfg.device, batch_size=cfg.embed_batch_size)
     return detector, embedder
+
+
+# --- model residency cache -----------------------------------------------------
+#
+# The detector and embedder lazy-load their neural networks on first use and
+# keep them loaded -- which is only a win if the same wrapper objects survive
+# between runs. The GUI used to call ``build_pipeline`` on every Process
+# click, throwing away fully-loaded models and re-loading YOLO + ResNet50
+# (seconds each click, plus VRAM churn) for identical settings. One cached
+# pair, keyed by everything that shapes construction, fixes that.
+
+_pipeline_lock = threading.Lock()
+_pipeline_key: tuple | None = None
+_pipeline_value: tuple[VehicleDetector, Embedder] | None = None
+
+
+def _pipeline_identity(cfg: config.PipelineConfig) -> tuple:
+    """The config fields that decide how the models get built.
+
+    ``detection_conf``, ``vehicle_class_ids`` and ``min_box_area`` are read
+    per-call at detect time (see ``VehicleDetector.detect``), so changing them
+    must NOT trigger a reload -- ``get_pipeline`` instead points the cached
+    detector at the fresh config.
+    """
+    return (cfg.yolo_weights, cfg.device, cfg.embed_batch_size, cfg.models_dir)
+
+
+def drop_pipeline() -> None:
+    """Forget the resident models (next run rebuilds them from scratch)."""
+    global _pipeline_key, _pipeline_value
+    with _pipeline_lock:
+        _pipeline_key = None
+        _pipeline_value = None
+
+
+def get_pipeline(cfg: config.PipelineConfig | None = None):
+    """Return ``(detector, embedder)`` for ``cfg``, reusing loaded models.
+
+    A cache hit returns the very objects from last time -- weights already on
+    device, first-use cost already paid -- so re-running Process after only
+    tweaking thresholds skips model loading entirely. Any change to the
+    constructor-shaping fields (weights key, device, batch size, models dir)
+    misses and rebuilds; per-call knobs are synced onto the cached detector so
+    they always reflect the caller's current settings.
+    """
+    global _pipeline_key, _pipeline_value
+
+    cfg = cfg or config.PipelineConfig()
+    key = _pipeline_identity(cfg)
+    with _pipeline_lock:
+        if _pipeline_value is not None and _pipeline_key == key:
+            detector, _ = _pipeline_value
+            detector.cfg = cfg  # runtime knobs track the fresh config
+            return _pipeline_value
+        value = build_pipeline(cfg)
+        _pipeline_key, _pipeline_value = key, value
+        return value

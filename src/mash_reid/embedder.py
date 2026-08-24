@@ -137,3 +137,16 @@ def get_default_embedder(
 ) -> Embedder:
     """Factory for the default appearance model. Swap here to change globally."""
     return ResNet50Embedder(device=device, batch_size=batch_size)
+
+
+def prefetch_weights() -> None:
+    """Download the ResNet50 checkpoint into the torch hub cache.
+
+    Used by the GUI's background first-run prefetch so the embedder's first
+    real use pays no network cost. Constructing the model is what triggers
+    the download; the instance is discarded immediately, keeping its RAM out
+    of the app until something actually embeds.
+    """
+    from torchvision.models import ResNet50_Weights, resnet50
+
+    resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)

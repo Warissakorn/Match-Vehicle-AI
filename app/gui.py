@@ -46,6 +46,8 @@ import i18n  # noqa: E402
 import theme  # noqa: E402
 from i18n import t  # noqa: E402
 from mash_reid import (  # noqa: E402
+    app_paths,
+    embedder,
     logging_setup,
     matcher,
     model_manager,
@@ -57,6 +59,7 @@ from mash_reid import (  # noqa: E402
     training_export,
     video_extractor,
 )
+import mash_reid.version as app_version  # noqa: E402
 from mash_reid.matcher import VehicleRecord  # noqa: E402
 
 # Named under the "mash_reid" tree (rather than __name__, which would be
@@ -66,6 +69,19 @@ from mash_reid.matcher import VehicleRecord  # noqa: E402
 log = logging.getLogger("mash_reid.gui")
 
 THUMB_SIZE = (140, 110)
+
+
+def _window_title() -> str:
+    """Title-bar text: the translated product line plus the release stamp.
+
+    The version is shown only on stamped builds -- "v1.2.3" tells a user
+    which zip they downloaded, while an unstamped source checkout gains
+    nothing from a permanent "vdev".
+    """
+    title = t("Match-Vehicle-AI  |  Cross-Point Vehicle Re-ID")
+    if app_version.is_release():
+        return f"{title}  v{app_version.get_version()}"
+    return title
 
 
 def _load_thumb(record: VehicleRecord, size=THUMB_SIZE):
@@ -116,12 +132,16 @@ class FrameZoomDialog(tk.Toplevel):
     INITIAL_SIZE = (720, 520)
     MIN_SCALE, MAX_SCALE = 0.2, 8.0
     WHEEL_STEP = 1.15
+    #: Quiet period after the last wheel tick before the expensive LANCZOS
+    #: sharpening pass runs -- see _redraw_draft.
+    SETTLE_DELAY_MS = 180
 
     def __init__(self, parent, image_path: str, title: str,
                 region: tuple[int, int, int, int] | None = None):
         super().__init__(parent)
         self.title(title)
         self._photo = None  # keep-alive ref
+        self._settle_job = None  # pending LANCZOS pass -- see _redraw_draft
 
         from PIL import Image, ImageDraw
 
@@ -168,14 +188,58 @@ class FrameZoomDialog(tk.Toplevel):
         self.transient(parent)
 
     def _redraw(self):
-        from PIL import Image, ImageTk
+        """Render at full quality right now (open, and the settle pass)."""
+        from PIL import Image
+
+        self._cancel_settle()
+        self._render(Image.Resampling.LANCZOS)
+
+    def _redraw_draft(self):
+        """Render fast for interactive zooming, then sharpen once it settles.
+
+        LANCZOS over a multi-megapixel frame scaled 4x takes long enough that
+        doing it on every wheel tick made zoom feel waterlogged. A wheel step
+        now repaints immediately with BILINEAR -- visually near-identical
+        while the image is in motion -- and one LANCZOS pass runs once the
+        wheel has rested for SETTLE_DELAY_MS.
+        """
+        from PIL import Image
+
+        self._render(Image.Resampling.BILINEAR)
+        self._cancel_settle()
+        self._settle_job = self.after(self.SETTLE_DELAY_MS,
+                                      lambda: self._settle())
+
+    def _settle(self):
+        self._settle_job = None
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:  # destroyed between schedule and fire
+            return
+        self._redraw()
+
+    def _cancel_settle(self):
+        if self._settle_job is not None:
+            try:
+                self.after_cancel(self._settle_job)
+            except tk.TclError:
+                pass
+            self._settle_job = None
+
+    def _render(self, resampling):
+        from PIL import ImageTk
 
         w = max(1, int(self._base_image.width * self._scale))
         h = max(1, int(self._base_image.height * self._scale))
-        resized = self._base_image.resize((w, h), Image.Resampling.LANCZOS)
+        resized = self._base_image.resize((w, h), resampling)
         self._photo = ImageTk.PhotoImage(resized)
         self.canvas.itemconfig(self._image_id, image=self._photo)
         self.canvas.configure(scrollregion=(0, 0, w, h))
+
+    def destroy(self):
+        self._cancel_settle()
+        super().destroy()
 
     def _on_wheel(self, event):
         factor = self.WHEEL_STEP if event.delta > 0 else 1 / self.WHEEL_STEP
@@ -197,7 +261,7 @@ class FrameZoomDialog(tk.Toplevel):
         rel_y = cursor_y / old_total_h if old_total_h else 0.0
 
         self._scale = new_scale
-        self._redraw()
+        self._redraw_draft()
 
         new_total_w = self._base_image.width * self._scale
         new_total_h = self._base_image.height * self._scale
@@ -392,6 +456,13 @@ class ReIDApp(ttk.Frame):
         # rebuild instead of one per motion event -- see _rematch.
         self._rematch_job = None
         self._resource_job = None  # see _poll_resources
+        # Pending debounced sidecar reads, per point -- see _refresh_time_status.
+        self._time_status_jobs: dict[str, int | None] = {"A": None, "B": None}
+        # Samples CPU/RAM/GPU on a daemon thread; the main-thread poll below
+        # only formats whatever snapshot already exists. Probes are too slow
+        # (torch import, NVML init) to run inside the Tk event loop.
+        self._sampler = sysmon.Sampler(config.RESOURCE_POLL_MS)
+        self._sampler.start()
         # Which workflow steps are unfolded. Remembered per step rather than
         # as one flag: once the folders and clocks are settled, step 3 is the
         # only one still worth having open, and that state should survive a
@@ -421,6 +492,10 @@ class ReIDApp(ttk.Frame):
         self._b_cluster_sizes: Counter = Counter()
         self._last_selected_a: VehicleRecord | None = None
         self._queue: queue.Queue = queue.Queue()
+        # Set the moment Process is clicked: the background model prefetch
+        # checks it between steps so it never races a real run for the same
+        # downloads -- see _start_prefetch.
+        self._process_started = False
 
         # Status bar first so its side="bottom" slot is claimed before any
         # expanding widget takes the cavity (see _build_status_bar), then the
@@ -552,7 +627,8 @@ class ReIDApp(ttk.Frame):
                             wraplength=560, justify="left")
             lbl.pack(side="left", padx=(theme.PAD_M, 0), fill="x", expand=True)
             self._time_labels[pt] = lbl
-            self._refresh_time_status(pt)
+            # Initial population: no burst to coalesce, so skip the debounce.
+            self._refresh_time_status_now(pt)
 
         mrow = ttk.Frame(step2, style="Surface.TFrame")
         mrow.pack(fill="x", pady=(theme.PAD_S, 0))
@@ -585,6 +661,9 @@ class ReIDApp(ttk.Frame):
         ttk.Label(drow, textvariable=self.device_status, style="Muted.TLabel",
                   wraplength=560, justify="left").pack(side="left", fill="x", expand=True)
         self._probe_devices()
+        # Kick off the first-run weight downloads while the user reads the
+        # window, instead of stalling their first Process click.
+        self._start_prefetch()
 
         # --- Step 3: matching ----------------------------------------------
         step3 = theme.CollapsibleCard(
@@ -618,13 +697,30 @@ class ReIDApp(ttk.Frame):
                                        style="Accent.TButton", command=self._on_process)
         self._process_btn.pack(side="right")
 
+    #: Quiet period after the last folder-path edit before the sidecar is
+    # actually re-read -- see _refresh_time_status.
+    TIME_STATUS_DEBOUNCE_MS = 300
+
     def _refresh_time_status(self, point: str):
         """Repaint one point's timestamp line from its folder's sidecar.
 
         Runs on every keystroke in the folder entry (via the variable trace),
-        so it stays cheap -- metadata only, never the per-frame map -- and
-        never raises: a half-typed path is the normal case here, not an error.
+        so bursts of edits are coalesced into a single sidecar read after a
+        short quiet period -- describe_sidecar is metadata-only (never the
+        per-frame map), but it still stats the folder and parses JSON, and
+        doing that once per character made fast typing visibly stutter.
+        Single events that want instant feedback call
+        :meth:`_refresh_time_status_now` instead.
         """
+        pending = self._time_status_jobs.get(point)
+        if pending is not None:
+            self.after_cancel(pending)
+        self._time_status_jobs[point] = self.after(
+            self.TIME_STATUS_DEBOUNCE_MS,
+            lambda: self._refresh_time_status_now(point))
+
+    def _refresh_time_status_now(self, point: str):
+        self._time_status_jobs[point] = None
         var = self.dir_a if point == "A" else self.dir_b
         folder = var.get().strip()
         if not folder or not os.path.isdir(folder):
@@ -724,7 +820,7 @@ class ReIDApp(ttk.Frame):
         # replaces, so it has to be set separately or it keeps the old
         # language for the rest of the session.
         try:
-            self.winfo_toplevel().title(t("Match-Vehicle-AI  |  Cross-Point Vehicle Re-ID"))
+            self.winfo_toplevel().title(_window_title())
         except tk.TclError:
             pass
         self._save_settings()
@@ -738,10 +834,11 @@ class ReIDApp(ttk.Frame):
         needed here.
         """
         sash = self._current_sash()
-        for job in (self._rematch_job, self._resource_job):
+        for job in (self._rematch_job, self._resource_job, *self._time_status_jobs.values()):
             if job is not None:
                 self.after_cancel(job)
         self._rematch_job = self._resource_job = None
+        self._time_status_jobs = {"A": None, "B": None}
         for child in list(self.winfo_children()):
             child.destroy()
         self._time_labels.clear()
@@ -768,17 +865,21 @@ class ReIDApp(ttk.Frame):
         self._save_settings()
 
     def _poll_resources(self):
-        """Refresh the CPU/RAM/GPU readout. Best-effort: a probe failure
-        (missing psutil, no GPU, ...) shows "n/a" for that field rather than
-        breaking the loop -- see ``mash_reid.sysmon``.
+        """Refresh the CPU/RAM/GPU readout from the background sampler.
+
+        This only formats the sampler's latest snapshot -- the probes
+        themselves (psutil, torch, NVML) run on ``self._sampler``'s thread,
+        never here, so a slow probe cannot hitch the UI.
 
         The pending callback id is kept so ``_rebuild_ui`` can cancel it:
         rebuilding calls ``_build_status_bar`` again, which starts a second
-        loop, and without cancelling, every language switch would leave
-        another one running for the rest of the session.
+        display loop, and without cancelling, every language switch would leave
+        another one running for the rest of the session. The sampler itself is
+        created once (in __init__), so display loops may come and go.
         """
         try:
-            self.resource_status.set(sysmon.format_sample(sysmon.sample()))
+            self.resource_status.set(
+                sysmon.format_sample(self._sampler.latest()))
         except Exception:
             log.debug("Resource sample failed", exc_info=True)
         self._resource_job = self.after(config.RESOURCE_POLL_MS, self._poll_resources)
@@ -1009,6 +1110,78 @@ class ReIDApp(ttk.Frame):
         threading.Thread(target=worker, daemon=True).start()
         self.after(150, poll)
 
+    def _start_prefetch(self):
+        """Download first-run model weights in the background.
+
+        A fresh install needs three downloads before the first Process can
+        run -- the YOLO detection weights, the ResNet50 embedder checkpoint,
+        and EasyOCR's clock-reading models. Doing all that inside the Process
+        click turned a first run into minutes of an unexplained stall; this
+        warms the caches while the window is still being read, with progress
+        shown in the model status label. Everything afterwards -- including
+        every subsequent run -- finds the files already on disk and goes
+        offline from there.
+
+        Best-effort by design: any failure (offline machine, blocked proxy,
+        full disk) leaves that cache cold and Process downloads on demand
+        exactly as before, so nothing here may raise out of the thread.
+        Skipped once Process has been clicked -- racing the real worker for
+        the same files would risk corrupting them for zero benefit.
+
+        Uses its own queue + poll loop rather than ``self._queue``: that one
+        is only drained once a Process run is underway, which is exactly when
+        this prefetch is no longer running.
+        """
+        q: queue.Queue = queue.Queue()
+
+        def worker():
+            def report(text):
+                q.put(("progress", text))
+
+            finished = True
+            try:
+                total = 3
+                for step_no, (label, run) in enumerate((
+                    (t("detection model"), lambda: model_manager.resolve_weights(
+                        self.model_key.get(), None)),
+                    (t("embedder"), embedder.prefetch_weights),
+                    ("OCR", timestamp_ocr.prefetch_models),
+                ), start=1):
+                    if self._process_started:
+                        finished = False  # a real run owns these downloads now
+                        break
+                    report(i18n.tf("Preparing {name} ({step} of {total})...",
+                                   name=label, step=step_no, total=total))
+                    run()
+            except Exception:
+                log.debug("Model prefetch failed; Process will download "
+                          "on demand instead", exc_info=True)
+                finished = False
+                report(t("model download paused - will retry when you press "
+                         "Process"))
+            q.put(("finished", finished))
+
+        def poll():
+            try:
+                while True:
+                    kind, payload = q.get_nowait()
+                    if kind == "progress":
+                        self.model_status.set(payload)
+                        continue
+                    # "finished": restore the plain downloaded/not-downloaded
+                    # readout on success; on bail-out the last progress line
+                    # already explains what happened.
+                    if payload:
+                        self._refresh_model_status()
+                    return
+            except queue.Empty:
+                pass
+            self.after(150, poll)
+
+        threading.Thread(target=worker, name="model-prefetch",
+                         daemon=True).start()
+        self.after(150, poll)
+
     def _current_match_config(self) -> config.MatchConfig:
         return config.MatchConfig(
             similarity_threshold=self.threshold.get(),
@@ -1020,6 +1193,10 @@ class ReIDApp(ttk.Frame):
         )
 
     def _on_process(self):
+        # Stops the background prefetch mid-flight if it is still running:
+        # from here on, the Process worker owns any outstanding downloads
+        # (see _start_prefetch).
+        self._process_started = True
         dir_a, dir_b = self.dir_a.get().strip(), self.dir_b.get().strip()
         if not os.path.isdir(dir_a) or not os.path.isdir(dir_b):
             messagebox.showerror(t("Invalid folders"), t("Please choose valid A and B folders."),
@@ -1040,7 +1217,10 @@ class ReIDApp(ttk.Frame):
             pcfg = config.PipelineConfig(
                 yolo_weights=self.model_key.get(), detection_conf=self.det_conf.get(),
                 device=self.device.get())
-            detector, embedder = pipeline.build_pipeline(pcfg)
+            # get_pipeline (not build_pipeline): identical settings reuse the
+            # models already resident from the last run instead of reloading
+            # YOLO + ResNet50 on every click.
+            detector, embedder = pipeline.get_pipeline(pcfg)
 
             def progress(done, total, msg):
                 self._queue.put(("status", f"[{done}/{total}] {msg}"))
@@ -2377,8 +2557,9 @@ class TimelineReviewDialog(tk.Toplevel):
             f"Click Process again to use the corrected times.")
         # Repaint the main window's step-2 line for this point -- the sidecar
         # it reads has just changed, and nothing else would trigger a refresh
-        # (the folder path is unchanged, so its trace does not fire).
-        refresh = getattr(self._app, "_refresh_time_status", None)
+        # (the folder path is unchanged, so its trace does not fire). One
+        # event, no burst: skip the debounce.
+        refresh = getattr(self._app, "_refresh_time_status_now", None)
         if refresh is not None:
             refresh(self.point)
         messagebox.showinfo(
@@ -2435,7 +2616,7 @@ class TimelineReviewDialog(tk.Toplevel):
                         self._app.status.set(
                             f"Point {self.point}: read {payload}/{len(names)} timestamp(s). "
                             f"Click Process again to use the corrected times.")
-                        refresh = getattr(self._app, "_refresh_time_status", None)
+                        refresh = getattr(self._app, "_refresh_time_status_now", None)
                         if refresh is not None:
                             refresh(self.point)
                         messagebox.showinfo(
@@ -2570,7 +2751,16 @@ def _set_window_icon(root):
 
 
 def main():
-    log_path = logging_setup.setup_logging()
+    # Print the build stamp and exit before any GUI work -- the frozen
+    # exe's "which build is this?" answer, usable from a script.
+    if "--version" in sys.argv:
+        print(f"MatchVehicleAI {app_version.get_version()}")
+        return
+    app_paths.apply_runtime_env()
+    log_path = logging_setup.setup_logging(app_paths.logs_dir())
+    log.info("Match-Vehicle-AI %s (python %s%s)",
+             app_version.get_version(), sys.version.split()[0],
+             ", frozen" if app_paths.is_frozen() else "")
     root = tk.Tk()
     # Language and scheme are installed before any widget exists, and read
     # straight from the settings file rather than waiting for ReIDApp to load
@@ -2588,7 +2778,7 @@ def main():
     i18n.set_language(saved_lang)
     theme.apply(root, saved_mode if saved_mode in theme.PALETTES else theme.DEFAULT_MODE,
                 i18n.current_language())
-    root.title(t("Match-Vehicle-AI  |  Cross-Point Vehicle Re-ID"))
+    root.title(_window_title())
     _set_window_icon(root)
     root.geometry("1180x820")
     # Below this, the control rows (folder pickers, device/model status) no
@@ -2601,6 +2791,7 @@ def main():
 
     def on_close():
         app._save_settings()
+        app._sampler.stop()  # daemon thread anyway; this just ends it promptly
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)

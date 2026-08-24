@@ -70,6 +70,13 @@ TH: dict[str, str] = {
     "✓ downloaded": "✓ ดาวน์โหลดแล้ว",
     "not downloaded": "ยังไม่ได้ดาวน์โหลด",
     "probing...": "กำลังตรวจสอบ...",
+    # Background first-run model prefetch (gui._start_prefetch)
+    "detection model": "โมเดลตรวจจับ",
+    "embedder": "โมเดลฝังเวกเตอร์",
+    "Preparing {name} ({step} of {total})...":
+        "กำลังเตรียม{name} ({step} จาก {total})...",
+    "model download paused - will retry when you press Process":
+        "หยุดดาวน์โหลดโมเดลชั่วคราว - จะลองอีกครั้งเมื่อกดประมวลผล",
 
     # Per-point timestamp state (timestamp_ocr.describe_sidecar)
     "pick a folder first": "เลือกโฟลเดอร์ก่อน",
