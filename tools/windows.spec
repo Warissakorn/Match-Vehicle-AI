@@ -82,7 +82,46 @@ a = Analysis(
     runtime_hooks=[],
     # Pulled in transitively by torch/ultralytics but unused here: matplotlib
     # and pandas alone add well over a hundred megabytes to the build.
-    excludes=["matplotlib", "pandas", "PyQt5", "PySide2", "IPython", "notebook"],
+    #
+    # Everything listed here must be provably unreachable at *runtime*, not
+    # merely unused at import time: the build's `--selftest` only forces the
+    # top-level heavy imports, so a package a bundled library reaches for
+    # lazily (mid-call) would slip past CI and fail in the user's hands. That
+    # is why the entries below are limited to two closed groups:
+    #
+    #   * test-only packages, which requirements-lock.txt installs because the
+    #     build job runs pytest before packaging, and which no app code path
+    #     can reach; and
+    #   * matplotlib's exclusive dependency satellites -- matplotlib itself is
+    #     already excluded above, so nothing else in the graph imports them.
+    #     fonttools alone is tens of megabytes.
+    #
+    # Deliberately NOT excluded, despite looking like dead weight: polars and
+    # ultralytics-platform (ultralytics reaches for them while producing
+    # results, i.e. after selftest has passed), sympy/networkx (torch.fx), and
+    # setuptools/pkg_resources (several bundled libraries still probe it at
+    # call time). Each would trade a modest size win for a failure that only
+    # appears once a user clicks Process.
+    excludes=[
+        "matplotlib",
+        "pandas",
+        "PyQt5",
+        "PySide2",
+        "IPython",
+        "notebook",
+        # test-only -- installed for the build job's pytest run, never imported
+        # by the application itself
+        "pytest",
+        "_pytest",
+        "pluggy",
+        "iniconfig",
+        "pygments",
+        # matplotlib-only satellites (matplotlib is excluded above)
+        "fontTools",
+        "contourpy",
+        "kiwisolver",
+        "cycler",
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

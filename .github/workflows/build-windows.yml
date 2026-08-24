@@ -125,6 +125,47 @@ jobs:
           [[ "$OUT" == *"MatchVehicleAI $(cat assets/_build_version.txt)" ]] || {
             echo "::error::exe did not report the stamped version"; exit 1; }
 
+      # Size is this bundle's standing problem: torch alone is a couple of
+      # hundred megabytes and the CUDA leg's cuDNN/cuBLAS DLLs push the tree
+      # past 2 GiB, so what a user extracts is far larger than what they
+      # downloaded. Trimming it has to be driven by measurement rather than
+      # guesswork -- several plausible-sounding cuts (EasyOCR language packs,
+      # UPX-compressing the DLLs) turn out to save nothing here, or to cost
+      # more in startup time and memory than they save on disk.
+      #
+      # So every build publishes what it actually weighs, broken down far
+      # enough to act on. The numbers land in the run summary next to each
+      # other, which is also what makes a size regression visible as it lands
+      # rather than months later in a bug report about disk usage.
+      - name: Report bundle size
+        shell: bash
+        run: |
+          BUNDLE=dist/MatchVehicleAI
+          TOTAL=$(du -sm "$BUNDLE" | cut -f1)
+          echo "### Bundle size (${{ matrix.flavor }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Extracted on disk: **${TOTAL} MB**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "<details><summary>Largest bundled packages</summary>" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # -d 2 reaches _internal/<package>, which is the level a decision to
+          # exclude something is actually made at.
+          du -m -d 2 "$BUNDLE" | sort -rn | head -25 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "<details><summary>Largest individual files</summary>" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # -exec du rather than find's -printf: the latter is a GNU
+          # extension, and `find` on a Windows runner is only GNU find as
+          # long as Git's usr/bin keeps winning over System32\find.exe.
+          find "$BUNDLE" -type f -exec du -m {} + | sort -rn | head -25 \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+
       # The CPU tree zips small (~350 MB); only the CUDA leg fights the cap.
       - name: Package CPU build (zip)
         if: matrix.flavor == 'cpu'
@@ -157,6 +198,28 @@ jobs:
             split -b 1900m --numeric-suffixes=1 -a 1 "$ARCHIVE" "$ARCHIVE."
             rm "$ARCHIVE"  # the artifact/upload globs below must match only the parts
           fi
+
+      # The download and the install are two different numbers and users feel
+      # both -- the archive is what they wait for, the extracted tree is what
+      # occupies their disk afterwards. Reporting the pair together (and the
+      # ratio between them) keeps that distinction in view: compression work
+      # moves the first number only, and excluding a package moves both.
+      - name: Report archive size
+        shell: bash
+        run: |
+          BUNDLE_MB=$(du -sm dist/MatchVehicleAI | cut -f1)
+          {
+            echo ""
+            echo "| ${{ matrix.flavor }} | size |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # The glob covers the CUDA leg's split-parts fallback, where the
+          # download is several files rather than one.
+          for f in ${{ matrix.archive }}*; do
+            MB=$(du -sm "$f" | cut -f1)
+            echo "| download \`$f\` | ${MB} MB |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "| extracted on disk | ${BUNDLE_MB} MB |" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
