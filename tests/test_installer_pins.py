@@ -204,3 +204,28 @@ def test_setup_section_uses_no_invented_directives() -> None:
     assert section, "the .iss no longer has a [Setup] section"
     used = set(re.findall(r"^([A-Za-z][A-Za-z0-9]*)=", section.group(1), re.MULTILINE))
     assert used <= known, f"unrecognised [Setup] directive(s): {sorted(used - known)}"
+
+
+def test_code_section_concatenates_strings_explicitly() -> None:
+    """No two string literals sit adjacent in the [Code] section.
+
+    [Code] is Pascal, which -- unlike C or Python -- does not join adjacent
+    string literals. A wrapped message written without a '+' compiles to a
+    syntax error rather than a long string, and the only place that shows up
+    is ISCC on a Windows runner, minutes into a release build. The mistake is
+    easy to make precisely because the broken form looks correct in every
+    other language this repository uses.
+
+    A '#13#10' between two literals is fine: a character code and a quoted
+    part do form one constant, which is why only quote-to-quote pairs are
+    rejected here.
+    """
+    code = re.search(r"^\[Code\]\n(.*)", _read(_ISS), re.MULTILINE | re.DOTALL)
+    assert code, "the .iss no longer has a [Code] section"
+    # Brace comments would otherwise contribute stray apostrophes ("uv's").
+    body = re.sub(r"\{[^}]*\}", "", code.group(1))
+    offenders = re.findall(r"'[ \t]*\r?\n[ \t]*'", body)
+    assert not offenders, (
+        f"{len(offenders)} pair(s) of adjacent string literals in [Code] -- "
+        f"Pascal needs an explicit '+' between them"
+    )

@@ -129,12 +129,18 @@ begin
         install behind: without its environment the app cannot start at all,
         and an installed-looking Start Menu entry that fails on every click
         is worse than a setup that says it did not finish. }
-      MsgBox('Setup could not download and install the dependencies.'#13#10#13#10
-             'This step needs a working internet connection. The console '
-             'window that just closed showed what failed.'#13#10#13#10
-             'Match-Vehicle-AI is not usable until setup completes '
-             'successfully -- please re-run the installer, or use the '
-             'self-contained MatchVehicleAI-windows.zip from the Releases '
+      { Every part is joined with an explicit '+'. Pascal does not
+        concatenate adjacent string literals the way C or Python does, so a
+        wrapped message assembled without one is a compile error, not a
+        long string. }
+      MsgBox('Setup could not download and install the dependencies.' +
+             #13#10#13#10 +
+             'This step needs a working internet connection. The console ' +
+             'window that just closed showed what failed.' +
+             #13#10#13#10 +
+             'Match-Vehicle-AI is not usable until setup completes ' +
+             'successfully -- please re-run the installer, or use the ' +
+             'self-contained MatchVehicleAI-windows.zip from the Releases ' +
              'page instead.',
              mbCriticalError, MB_OK);
   end;
