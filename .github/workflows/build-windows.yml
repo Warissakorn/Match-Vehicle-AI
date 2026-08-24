@@ -118,16 +118,35 @@ jobs:
         run: Compress-Archive -Path dist/MatchVehicleAI `
             -DestinationPath "MatchVehicleAI${{ matrix.suffix }}.zip"
 
+      # Release assets are hard-capped at 2 GiB per file and the CUDA bundle
+      # exceeds that (~2.7 GiB -- the CUDA DLLs dwarf everything else), so any
+      # oversize zip is byte-split into .1/.2 parts. The parts are plain
+      # concatenated chunks of the original archive: joining them back with
+      # "copy /b ...zip.1+...zip.2 ...zip" restores an ordinary zip (see the
+      # README's ready-to-run section for the exact commands).
+      - name: Split oversize zip for the release asset limit
+        shell: bash
+        run: |
+          ZIP="MatchVehicleAI${{ matrix.suffix }}.zip"
+          SIZE=$(wc -c < "$ZIP")
+          if [ "$SIZE" -lt 2147483648 ]; then
+            echo "$ZIP is $SIZE bytes -- under the limit, keeping it whole"
+          else
+            echo "$ZIP is $SIZE bytes -- over the 2 GiB asset limit, splitting"
+            split -b 1900m --numeric-suffixes=1 -a 1 "$ZIP" "$ZIP."
+          fi
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: MatchVehicleAI${{ matrix.suffix }}
-          path: MatchVehicleAI${{ matrix.suffix }}.zip
+          path: MatchVehicleAI${{ matrix.suffix }}.zip*
           if-no-files-found: error
 
-      # Each leg attaches its own zip; both end up on the same release page.
+      # Each leg attaches its own zip (or its split parts); both end up on the
+      # same release page.
       - name: Attach to GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: MatchVehicleAI${{ matrix.suffix }}.zip
+          files: MatchVehicleAI${{ matrix.suffix }}.zip*
