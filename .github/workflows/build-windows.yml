@@ -21,6 +21,13 @@ on:
       - "v*"
   workflow_dispatch: {}
 
+# The release-attach step below creates a release and uploads assets to it,
+# which needs contents:write -- the default token on push events is
+# read-only, so without this the attach step dies with 403 "Resource not
+# accessible by integration" (as v1.0.0's first build did).
+permissions:
+  contents: write
+
 env:
   PYTHON_VERSION: "3.14"
   TORCH_VERSION: "2.13.0"
