@@ -130,6 +130,9 @@ def test_cuda_requirements_pin_the_local_version_and_index() -> None:
     ]
 
 
+_ISS = os.path.join(_ROOT, "tools", "installer", "MatchVehicleAI.iss")
+
+
 def test_installer_ships_every_module_the_app_imports() -> None:
     """The .iss must carry the entry point bootstrap.py self-tests against.
 
@@ -138,7 +141,7 @@ def test_installer_ships_every_module_the_app_imports() -> None:
     produces an installer that builds, installs, and only fails once the
     launcher runs.
     """
-    iss = _read(os.path.join(_ROOT, "tools", "installer", "MatchVehicleAI.iss"))
+    iss = _read(_ISS)
     for required in (
         r"tools\install_torch.py",
         r"tools\pyinstaller_entry.py",
@@ -148,3 +151,56 @@ def test_installer_ships_every_module_the_app_imports() -> None:
         r"config.py",
     ):
         assert required in iss, f"{required} is not in the installer's [Files] list"
+
+
+def test_every_installer_source_path_exists() -> None:
+    """Every [Files] entry points at something that is actually here.
+
+    ISCC catches this too, but only on a Windows runner several minutes into
+    a build, and only for whichever entry it reaches first. Checking it here
+    turns "the release job failed" into a local test failure naming the path
+    -- which matters most for the rename that moves a file and leaves the
+    installer silently shipping an incomplete tree.
+    """
+    root_token = "{#RepoRoot}"
+    # Fetched into the repository root by the workflow's "Fetch uv" step and
+    # git-ignored, so it is legitimately absent from a checkout. Listed here
+    # rather than skipped silently: it is the one [Files] entry whose absence
+    # locally says nothing about whether the build will find it.
+    build_time_inputs = {"uv.exe"}
+    missing = []
+    for raw in re.findall(r'^Source:\s*"([^"]+)"', _read(_ISS), re.MULTILINE):
+        assert raw.startswith(root_token), f"{raw} is not relative to RepoRoot"
+        relative = raw[len(root_token):].lstrip("\\").replace("\\", os.sep)
+        if relative in build_time_inputs:
+            continue
+        # A trailing \* is Inno's "everything in this directory"; the check
+        # that matters for it is that the directory itself is there.
+        target = os.path.join(_ROOT, relative)
+        if target.endswith(os.sep + "*"):
+            target = os.path.dirname(target)
+        if not os.path.exists(target):
+            missing.append(relative)
+    assert not missing, f"the installer's [Files] list points at missing paths: {missing}"
+
+
+def test_setup_section_uses_no_invented_directives() -> None:
+    """Guard against a [Setup] directive that simply does not exist.
+
+    Inno rejects an unknown directive outright, so one invented name fails
+    the whole release job with a message no local run would have produced.
+    The allow-list is deliberately just the directives this script uses,
+    checked off against Inno's documentation once -- it is here to notice a
+    *new* invented name, not to mirror Inno's full grammar.
+    """
+    known = {
+        "AppId", "AppName", "AppVersion", "AppPublisher", "AppSupportURL",
+        "DefaultDirName", "DefaultGroupName", "OutputBaseFilename", "OutputDir",
+        "SetupIconFile", "Compression", "SolidCompression", "WizardStyle",
+        "ArchitecturesAllowed", "ArchitecturesInstallIn64BitMode",
+        "PrivilegesRequired", "PrivilegesRequiredOverridesAllowed",
+    }
+    section = re.search(r"^\[Setup\]\n(.*?)(?=^\[)", _read(_ISS), re.MULTILINE | re.DOTALL)
+    assert section, "the .iss no longer has a [Setup] section"
+    used = set(re.findall(r"^([A-Za-z][A-Za-z0-9]*)=", section.group(1), re.MULTILINE))
+    assert used <= known, f"unrecognised [Setup] directive(s): {sorted(used - known)}"

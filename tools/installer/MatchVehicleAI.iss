@@ -48,13 +48,16 @@ ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 
-; The dependency download is the long pole here, not the disk write: a CUDA
-; environment pulls roughly 2.5 GB. Say so before anything starts rather
-; than after the user has committed to it.
-DiskSpaceWarning=no
-
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Messages]
+; The download is the long pole here, not the disk write: a CUDA environment
+; pulls roughly 2.5 GB, and Setup's own progress bar cannot show any of it
+; because the work happens in provision.cmd after installation. Saying so on
+; the welcome page is the only honest place -- by the time the console
+; appears the user has already committed.
+WelcomeLabel2=This will install [name/ver] on your computer.%n%nSetup downloads the app's dependencies while it runs, so it needs a working internet connection and can take several minutes -- around 2.5 GB if an NVIDIA GPU is detected, less otherwise. Progress is shown in a console window.%n%nIf you need an offline install, cancel and use MatchVehicleAI-windows.zip from the Releases page instead.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; \

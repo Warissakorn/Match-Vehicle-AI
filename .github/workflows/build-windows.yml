@@ -349,6 +349,12 @@ jobs:
             $iscc = Get-ChildItem "C:\Program Files (x86)\Inno Setup*\ISCC.exe" |
                       Select-Object -First 1
           }
+          # Printed before compiling, not after: when ISCC rejects the script
+          # the useful half of the diagnosis is which Inno it was -- several
+          # directives the script relies on (x64compatible among them) exist
+          # only from 6.3 onward, and the runner image's version moves.
+          Write-Host "ISCC: $($iscc.FullName)"
+          & $iscc.FullName /? 2>&1 | Select-Object -First 2
           & $iscc.FullName /DAppVersion=${{ steps.version.outputs.value }} `
               tools\installer\MatchVehicleAI.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
