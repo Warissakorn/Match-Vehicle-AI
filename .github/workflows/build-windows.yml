@@ -44,6 +44,14 @@ env:
   # Newest CUDA-12 wheel line: runs on driver >= 527.41. (+cu130 would need a
   # CUDA-13 driver, ~580.xx -- far too new to demand from users.)
   CUDA_TORCH_INDEX: "https://download.pytorch.org/whl/cu126"
+  # uv provisions the thin installer's environment and is baked into it, so
+  # it is pinned like everything else that ends up in a shipped artifact --
+  # "latest" would mean two builds of the same tag could carry different
+  # bytes. UV_SHA256 is the checksum astral-sh publishes beside the asset:
+  # a version pin alone still trusts whatever the URL serves, and this is
+  # the one binary here that is fetched from outside PyPI/pytorch.org.
+  UV_VERSION: "0.12.5"
+  UV_SHA256: "4c4d49d8738847d9b71ba319e49a5688c93eac0fe6204b1df24e98528dddf39a"
 
 jobs:
   build:
@@ -303,20 +311,26 @@ jobs:
           echo "value=$VER" >> "$GITHUB_OUTPUT"
 
       # uv is the one dependency that cannot be fetched by the thing it
-      # bootstraps, so it is baked into the installer. Deliberately the
-      # latest release rather than a pin: a stale pin here fails the build
-      # outright, and uv's only jobs in this design -- fetch a CPython, make
-      # a venv, install pinned wheels -- are the parts of its surface least
-      # likely to move. The resolved version is echoed into the summary so a
-      # regression can be traced to it.
+      # bootstraps, so it is baked into the installer -- which makes it
+      # shipped bytes, and shipped bytes get pinned and verified. The
+      # checksum is the part that matters: pinning the version fixes which
+      # release is requested, but only comparing the hash establishes that
+      # what arrived is that release. Note the tag carries no "v" prefix.
       - name: Fetch uv
         shell: bash
         run: |
           curl -fsSL -o uv.zip \
-            https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip
+            "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-pc-windows-msvc.zip"
+          echo "${UV_SHA256}  uv.zip" | sha256sum -c - || {
+            echo "::error::uv-${UV_VERSION} checksum mismatch -- refusing to build an installer around it"
+            exit 1; }
           7z e -y uv.zip uv.exe > /dev/null
           test -f uv.exe
-          echo "uv version: $(./uv.exe --version)" >> "$GITHUB_STEP_SUMMARY"
+          # Confirms the pin end to end: a zip whose hash matched but whose
+          # contents were built from another revision would surface here.
+          echo "uv reports: $(./uv.exe --version)" >> "$GITHUB_STEP_SUMMARY"
+          ./uv.exe --version | grep -q "${UV_VERSION}" || {
+            echo "::error::uv.exe does not report ${UV_VERSION}"; exit 1; }
 
       # Inno Setup ships on the windows runner image, but the install path
       # has moved between image versions -- resolve it rather than hardcode.

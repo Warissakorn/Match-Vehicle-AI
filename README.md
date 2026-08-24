@@ -85,7 +85,7 @@ Python 3.14):
 
 | Download | Size | Torch build | Choose it when... |
 |----------|------|-------------|-------------------|
-| `MatchVehicleAI-windows-installer.exe` | tens of MB | picked from your GPU during setup | You have internet during setup and want the small download |
+| `MatchVehicleAI-windows-installer.exe` | ~20 MB | picked from your GPU during setup | You have internet during setup and want the small download |
 | `MatchVehicleAI-windows.zip` | ~350 MB | CPU-only | No internet during setup, no NVIDIA GPU |
 | `MatchVehicleAI-windows-cuda.7z` | ~2 GB | CUDA 12.6 (`torch+cu126`) | No internet during setup, NVIDIA GPU with driver ≥ **527.41** |
 

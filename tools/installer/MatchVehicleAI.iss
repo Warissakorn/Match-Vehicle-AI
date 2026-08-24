@@ -3,9 +3,10 @@
 ; Compile with (ISCC.exe ships on GitHub's windows runners):
 ;   ISCC /DAppVersion=1.2.3 tools\installer\MatchVehicleAI.iss
 ;
-; What this produces is a few tens of megabytes -- the application source
-; plus uv.exe -- against the packaged builds' 350 MB / 2.7 GiB. The
-; difference is not compression: the dependencies simply are not in here.
+; What this produces is around 20 MB against the packaged builds' 350 MB /
+; 2.7 GiB -- and almost all of that 20 MB is uv.exe (49 MB on disk), not the
+; application, which is about 1 MB of Python. The difference is not
+; compression: the dependencies simply are not in here.
 ; Setup fetches them from PyPI and pytorch.org while it runs, picking the
 ; CPU or CUDA torch from the machine's own driver instead of asking the user
 ; to have chosen the right archive. See tools/installer/bootstrap.py for the
