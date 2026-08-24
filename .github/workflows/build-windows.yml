@@ -146,6 +146,12 @@ jobs:
       # other, which is also what makes a size regression visible as it lands
       # rather than months later in a bug report about disk usage.
       #
+      # `tee` rather than a plain append: the summary renders for a human
+      # reading the run page, but it is not part of the job log, so a report
+      # written only there cannot be read back through the API afterwards.
+      # Sending it to both keeps the same numbers available to whoever --
+      # or whatever -- is diagnosing the build later.
+      #
       # Note the sort-to-file-then-head shape below rather than the obvious
       # `sort | head`. Actions runs `shell: bash` with `set -eo pipefail`, so
       # once head has taken its 25 lines and closed the pipe, sort dies of
@@ -166,7 +172,7 @@ jobs:
             echo ""
             echo "Extracted on disk: **${TOTAL} MB**"
             echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
           # -d 2 reaches _internal/<package>, which is the level a decision to
           # exclude something is actually made at.
@@ -179,7 +185,7 @@ jobs:
             echo '```'
             echo "</details>"
             echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
           # -exec du rather than find's -printf: the latter is a GNU
           # extension, and `find` on a Windows runner is only GNU find as
@@ -192,7 +198,7 @@ jobs:
             head -25 "$REPORT"
             echo '```'
             echo "</details>"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # The CPU tree zips small (~350 MB); only the CUDA leg fights the cap.
       - name: Package CPU build (zip)
@@ -241,14 +247,14 @@ jobs:
             echo ""
             echo "| ${{ matrix.flavor }} | size |"
             echo "|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           # The glob covers the CUDA leg's split-parts fallback, where the
           # download is several files rather than one.
           for f in ${{ matrix.archive }}*; do
             MB=$(du -sm "$f" | cut -f1)
-            echo "| download \`$f\` | ${MB} MB |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| download \`$f\` | ${MB} MB |" | tee -a "$GITHUB_STEP_SUMMARY"
           done
-          echo "| extracted on disk | ${BUNDLE_MB} MB |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| extracted on disk | ${BUNDLE_MB} MB |" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # v6, skipping v5: every action here is held to the lowest major that
       # runs on Node 24, since Node 20 is deprecated on the runners. For
@@ -416,7 +422,7 @@ jobs:
             echo "|---|---|"
             echo "| download | ${DOWNLOAD} MB |"
             echo "| installed on disk (CPU torch) | ${INSTALLED} MB |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v6
