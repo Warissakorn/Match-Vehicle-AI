@@ -75,6 +75,66 @@ run.bat
 
 (double-clicking the file works on most desktops)
 
+## Ready-to-run Windows builds
+
+Every tag (and any manual run of the *Build Windows executables* workflow)
+publishes two self-contained builds on the
+[Releases](https://github.com/Warissakorn/Match-Vehicle-AI/releases) page,
+built reproducibly from `requirements-lock.txt` on Python 3.14:
+
+| Download | Torch build | Choose it when... |
+|----------|-------------|-------------------|
+| `MatchVehicleAI-windows.zip` | CPU-only | No NVIDIA GPU, or smallest download |
+| `MatchVehicleAI-windows-cuda.zip` | CUDA 12.6 (`torch+cu126`) | NVIDIA GPU with driver ≥ **527.41** |
+
+Unzip anywhere and run `MatchVehicleAI.exe`. The CUDA build is roughly twice
+the download because the CUDA runtime DLLs ship inside it; through CUDA's
+minor-version compatibility that same wheel serves every driver from 527.41
+upward — there is no need to match it against your exact driver version —
+and the app still falls back to CPU automatically if no usable GPU is found.
+Otherwise the two builds are identical: same spec, same code, and each leg
+runs its dependency-import selftest (`--selftest`) plus the unit-test suite
+before it is packaged.
+
+**First run downloads the models** (~110 MB: YOLO detection weights, the
+ResNet50 embedder, EasyOCR's clock-reading models). The download starts in
+the background as soon as the window opens — progress shows next to
+**Manage models...** — so by the time folders are chosen it has usually
+finished; pressing Process earlier simply carries on with the download
+inline, exactly like the old behaviour. After that first run, everything
+works fully offline.
+
+**Where your data lives:** an installed build keeps downloaded models,
+settings, logs and OCR caches under `%LOCALAPPDATA%\MatchVehicleAI`, so the
+app can run from a read-only folder and an updated zip can be extracted
+right over an old install without losing anything. Running from source keeps
+using per-project folders (`models/`, `settings.json`, `logs/`) exactly as
+before. Set `MASH_DATA_DIR` to override the data root in either mode.
+
+**Version:** every build is stamped with its git tag (workflow_dispatch runs
+get an increasing `0.0.0-dev.N` instead). It appears in the window title and
+the run log, and `MatchVehicleAI.exe --version` prints it.
+
+### Performance notes
+
+The packaging and the app are shaped around three budgets — launch time, UI
+smoothness, and memory:
+
+- **Launch** ships a *folder*, not a single-file exe: a onefile build would
+  unpack a gigabyte of DLLs to `%TEMP%` (and let antivirus rescan all of it)
+  on every single start; see the header of `tools/windows.spec`. No AI
+  library is imported until Process actually runs, so the window opens on
+  tkinter + numpy alone.
+- **Smoothness**: heavy probes (GPU stats, model loads) run on worker
+  threads; thumbnail decode, matching and clustering stay off the UI thread;
+  slider drags and path typing coalesce instead of recomputing per event;
+  zoom repaints fast while the wheel moves and sharpens once it settles.
+- **Memory**: models stay resident across Process clicks rather than
+  reloading per click, but only one copy — changing device/model rebuilds
+  and frees the old one. Similarity matrices are computed in bounded
+  row-blocks, so real-world gallery sizes (12k vehicles) cost ~50 MB of
+  working memory instead of multiple gigabytes.
+
 ## Manual install
 
 If you prefer to set things up yourself:
@@ -425,17 +485,21 @@ appear in the Device dropdown / `--device` choices — this looks identical to
 `tools/install_torch.py` during dependency installation. That helper:
 
 1. reads the installed NVIDIA driver version from `nvidia-smi`;
-2. picks the **CUDA build that driver actually supports** (`cu124`, `cu121` or
-   `cu118`) and installs it *before* the regular `requirements.txt` install, so
-   the plain install sees a compatible `torch` already there and leaves it alone;
+2. picks a **CUDA build that driver actually supports** — currently the
+   `cu126` line, which through CUDA's minor-version compatibility covers
+   every driver ≥ 527.41 (Windows) / 525.60 (Linux) — and installs it *before*
+   the regular `requirements.txt` install, so the plain install sees a
+   compatible `torch` already there and leaves it alone;
 3. verifies the result and prints one line telling you whether the GPU will
-   really be used — e.g. `GPU ready: NVIDIA GeForce RTX 3060 (CUDA 12.1)`.
+   really be used — e.g. `GPU ready: NVIDIA GeForce RTX 3060 (CUDA 12.6)`.
 
 Matching the wheel to the driver matters: a build newer than the driver
 installs *successfully* but still reports `torch.cuda.is_available() == False`,
-which looks exactly like having no GPU. If your driver is older than every CUDA
-build above, the helper says so and stays on CPU rather than installing
+which looks exactly like having no GPU. If your driver predates the CUDA-12
+floor above, the helper says so and stays on CPU rather than installing
 something that can't initialize — update the driver to enable GPU support.
+(There is no older fallback line anymore: PyTorch stopped publishing the
+`cu118` builds that used to serve those machines.)
 
 The whole step is best-effort (any failure falls back to the CPU build) and
 only runs when dependencies are installed, not on every launch. **Delete
@@ -461,8 +525,11 @@ e.g.:
 
 ```bash
 pip uninstall torch torchvision
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
+
+(Or skip all of this by using the ready-made `MatchVehicleAI-windows-cuda.zip`
+from the Releases page — see "Ready-to-run Windows builds" above.)
 
 ## Detection models
 
@@ -494,7 +561,9 @@ model), which is passed straight to YOLO.
 **Manage models...** button (download / update / remove, with install status).
 
 **Where weights live / staying up to date:** downloaded weights are cached in
-`<project>/models` (override with the `MASH_MODELS_DIR` env var or `--models-dir`).
+`<project>/models` when running from source (override with the
+`MASH_MODELS_DIR` env var or `--models-dir`); an installed Windows build keeps
+them under `%LOCALAPPDATA%\MatchVehicleAI\models`.
 "Latest" tracks the installed `ultralytics` version, so to pull newer published
 weights, upgrade the package (`pip install -U ultralytics`) and then
 `python models_cli.py update <model>`.

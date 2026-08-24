@@ -1,4 +1,19 @@
-name: Build Windows executable
+name: Build Windows executables
+
+# Two artifacts per run, built from one pinned environment
+# (requirements-lock.txt + Python 3.14):
+#
+#   MatchVehicleAI-windows.zip       -- CPU-only torch; runs anywhere.
+#   MatchVehicleAI-windows-cuda.zip  -- torch+cu126 wheels; GPU-accelerated
+#                                       detection/embedding/OCR on any NVIDIA
+#                                       driver >= 527.41 (CUDA-12 minor-version
+#                                       compatibility), falls back to CPU code
+#                                       paths otherwise. Roughly double the
+#                                       download size because the CUDA DLLs are
+#                                       bundled.
+#
+# The app picks CUDA up on its own when torch reports it available, so the two
+# builds differ only in which torch wheel went in -- same spec, same code.
 
 on:
   push:
@@ -6,25 +21,69 @@ on:
       - "v*"
   workflow_dispatch: {}
 
+env:
+  PYTHON_VERSION: "3.14"
+  TORCH_VERSION: "2.13.0"
+  TORCHVISION_VERSION: "0.28.0"
+  # Newest CUDA-12 wheel line: runs on driver >= 527.41. (+cu130 would need a
+  # CUDA-13 driver, ~580.xx -- far too new to demand from users.)
+  CUDA_TORCH_INDEX: "https://download.pytorch.org/whl/cu126"
+
 jobs:
   build:
-    name: PyInstaller (windows-latest)
+    name: PyInstaller (${{ matrix.flavor }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: cpu
+            # Default PyPI Windows wheels are CPU-only -- no extra index needed.
+            torch_packages: "torch==2.13.0 torchvision==0.28.0"
+            torch_index_args: ""
+            suffix: "-windows"
+          - flavor: cuda
+            torch_packages: "torch==2.13.0+cu126 torchvision==0.28.0+cu126"
+            torch_index_args: "--index-url https://download.pytorch.org/whl/cu126"
+            suffix: "-windows-cuda"
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
+          cache-dependency-path: requirements-lock.txt
 
-      - name: Install dependencies
+      # Torch first, from its own index for the CUDA leg, so that installing
+      # requirements-lock.txt afterwards sees torch/torchvision already
+      # satisfied instead of pulling the CPU wheels as easyocr dependencies.
+      - name: Install torch stack (${{ matrix.flavor }})
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install pyinstaller pyinstaller-hooks-contrib
+          python -m pip install ${{ matrix.torch_packages }} ${{ matrix.torch_index_args }}
+
+      - name: Install pinned dependencies
+        run: python -m pip install -r requirements-lock.txt
+
+      # Baked into the bundle as assets/_build_version.txt and read back at
+      # runtime (--version flag, title bar, log line). Tag builds carry the
+      # tag itself; manual runs get an increasing dev number so they can still
+      # be told apart.
+      - name: Stamp build version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VER="${GITHUB_REF_NAME}"
+          else
+            VER="0.0.0-dev.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "$VER" > assets/_build_version.txt
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
 
       # Produces dist/MatchVehicleAI/ (a folder, not a single .exe) -- see the
       # header of tools/windows.spec for why onefile is the wrong shape here.
@@ -38,18 +97,30 @@ jobs:
       - name: Verify bundled dependencies
         run: dist/MatchVehicleAI/MatchVehicleAI.exe --selftest
 
+      # Proves the stamp above survived packaging -- the exe must report the
+      # built version, not fall back to "dev".
+      - name: Check stamped version
+        shell: bash
+        run: |
+          OUT=$(dist/MatchVehicleAI/MatchVehicleAI.exe --version)
+          echo "exe reports: $OUT"
+          [[ "$OUT" == *"MatchVehicleAI $(cat assets/_build_version.txt)" ]] || {
+            echo "::error::exe did not report the stamped version"; exit 1; }
+
       - name: Package
-        run: Compress-Archive -Path dist/MatchVehicleAI -DestinationPath MatchVehicleAI-windows.zip
+        run: Compress-Archive -Path dist/MatchVehicleAI `
+            -DestinationPath "MatchVehicleAI${{ matrix.suffix }}.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MatchVehicleAI-windows
-          path: MatchVehicleAI-windows.zip
+          name: MatchVehicleAI${{ matrix.suffix }}
+          path: MatchVehicleAI${{ matrix.suffix }}.zip
           if-no-files-found: error
 
+      # Each leg attaches its own zip; both end up on the same release page.
       - name: Attach to GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: MatchVehicleAI-windows.zip
+          files: MatchVehicleAI${{ matrix.suffix }}.zip

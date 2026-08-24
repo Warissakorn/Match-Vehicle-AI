@@ -52,20 +52,27 @@ def test_parse_error_text_is_none():
 
 
 # --- select_wheel_tag: Windows tiers ----------------------------------------
-
-def test_windows_modern_driver_gets_cu124():
-    assert install_torch.select_wheel_tag("551.61", "Windows") == "cu124"
-    assert install_torch.select_wheel_tag("560.94", "Windows") == "cu124"
-
-
-def test_windows_mid_driver_gets_cu121():
-    assert install_torch.select_wheel_tag("527.41", "Windows") == "cu121"
-    assert install_torch.select_wheel_tag("537.13", "Windows") == "cu121"
+# Current PyTorch publishes one CUDA-12 line (cu126) whose minor-version
+# compatibility covers every driver from the 12.x floor upward, so there is a
+# single qualifying tier and everything below it gets nothing.
 
 
-def test_windows_older_driver_gets_cu118():
-    assert install_torch.select_wheel_tag("452.39", "Windows") == "cu118"
-    assert install_torch.select_wheel_tag("472.12", "Windows") == "cu118"
+def test_windows_modern_driver_gets_cu126():
+    assert install_torch.select_wheel_tag("551.61", "Windows") == "cu126"
+    assert install_torch.select_wheel_tag("580.10", "Windows") == "cu126"
+
+
+def test_windows_floor_driver_gets_cu126():
+    assert install_torch.select_wheel_tag("527.41", "Windows") == "cu126"
+    assert install_torch.select_wheel_tag("537.13", "Windows") == "cu126"
+
+
+def test_windows_pre_floor_driver_gets_nothing():
+    # PyTorch no longer publishes the old cu118 line these machines once fell
+    # back to -- installing anything would yield a wheel that cannot init.
+    assert install_torch.select_wheel_tag("452.39", "Windows") is None
+    assert install_torch.select_wheel_tag("472.12", "Windows") is None
+    assert install_torch.select_wheel_tag("527.40", "Windows") is None
 
 
 def test_windows_ancient_driver_gets_nothing():
@@ -75,23 +82,22 @@ def test_windows_ancient_driver_gets_nothing():
 
 
 def test_windows_tier_boundary_is_inclusive():
-    # Exactly at the published floor must qualify, not fall to the tier below.
-    assert install_torch.select_wheel_tag("551.61", "Windows") == "cu124"
-    assert install_torch.select_wheel_tag("551.60", "Windows") == "cu121"
+    # Exactly at the published floor must qualify, not fall to nothing.
+    assert install_torch.select_wheel_tag("527.41", "Windows") == "cu126"
 
 
 # --- select_wheel_tag: Linux tiers ------------------------------------------
 
-def test_linux_modern_driver_gets_cu124():
-    assert install_torch.select_wheel_tag("550.54.14", "Linux") == "cu124"
+def test_linux_modern_driver_gets_cu126():
+    assert install_torch.select_wheel_tag("550.54.14", "Linux") == "cu126"
 
 
-def test_linux_mid_driver_gets_cu121():
-    assert install_torch.select_wheel_tag("525.60.13", "Linux") == "cu121"
+def test_linux_floor_driver_gets_cu126():
+    assert install_torch.select_wheel_tag("525.60.13", "Linux") == "cu126"
 
 
-def test_linux_older_driver_gets_cu118():
-    assert install_torch.select_wheel_tag("470.82.01", "Linux") == "cu118"
+def test_linux_pre_floor_driver_gets_nothing():
+    assert install_torch.select_wheel_tag("470.82.01", "Linux") is None
 
 
 def test_linux_ancient_driver_gets_nothing():
@@ -101,7 +107,7 @@ def test_linux_ancient_driver_gets_nothing():
 def test_three_part_driver_compares_against_two_part_floor():
     # The floors are two-part; a three-part driver string must not compare as
     # "longer therefore greater" and skip a tier.
-    assert install_torch.select_wheel_tag("525.59.99", "Linux") == "cu118"
+    assert install_torch.select_wheel_tag("525.59.99", "Linux") is None
 
 
 # --- select_wheel_tag: platforms and bad input -------------------------------
@@ -126,10 +132,10 @@ def test_unparseable_driver_version_gets_nothing():
 # --- cuda_check_command ------------------------------------------------------
 
 def test_install_command_targets_the_running_interpreter_and_index():
-    cmd = install_torch.cuda_check_command("cu121")
+    cmd = install_torch.cuda_check_command("cu126")
     assert cmd[1:4] == ["-m", "pip", "install"]
     assert "torch" in cmd and "torchvision" in cmd
-    assert "https://download.pytorch.org/whl/cu121" in cmd
+    assert "https://download.pytorch.org/whl/cu126" in cmd
 
 
 # --- detect_driver_version: must degrade, never raise ------------------------

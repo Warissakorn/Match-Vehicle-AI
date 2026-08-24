@@ -20,21 +20,20 @@ import logging
 import os
 import shutil
 
-from mash_reid import model_registry
+from mash_reid import app_paths, model_registry
 
 log = logging.getLogger(__name__)
 
-_ENV_MODELS_DIR = "MASH_MODELS_DIR"
+_ENV_MODELS_DIR = "MASH_MODELS_DIR"  # honoured by app_paths.models_dir()
 
 
 def default_models_dir() -> str:
-    """Folder where weights are stored. ``$MASH_MODELS_DIR`` overrides the default."""
-    env = os.environ.get(_ENV_MODELS_DIR)
-    if env:
-        return env
-    # src/mash_reid/model_manager.py -> mash_reid -> src -> project root
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(root, "models")
+    """Folder where weights are stored. ``$MASH_MODELS_DIR`` overrides the default.
+
+    Delegates to ``app_paths`` so frozen builds land in the user data
+    directory instead of beside a read-only executable.
+    """
+    return app_paths.models_dir()
 
 
 def _key_of(model) -> str:

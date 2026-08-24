@@ -1,0 +1,98 @@
+# Fully pinned dependency set for reproducible PyInstaller builds.
+#
+# Generated from a verified working environment (Windows, Python 3.14,
+# 2026-08). The build workflow installs the torch stack FIRST -- one flavor
+# per artifact -- then this file, so pip never resolves torch itself:
+#
+#   CPU leg:   pip install torch==2.13.0 torchvision==0.28.0
+#   CUDA leg:  pip install torch==2.13.0+cu126 torchvision==0.28.0+cu126 \
+#                  --index-url https://download.pytorch.org/whl/cu126
+#
+# +cu126 is the newest CUDA-12 wheel line; through CUDA minor-version
+# compatibility it runs on any NVIDIA driver >= 527.41. (Newer still is
+# +cu130, but that jumps to the CUDA-13 driver floor ~580.xx and would lock
+# out most of the fleet this app targets.)
+#
+# torch/torchvision are deliberately absent below for exactly that reason.
+#
+# Both opencv variants appear because each has a hard requirer we need:
+# ultralytics demands plain opencv-python, easyocr demands -headless (and
+# -headless does not satisfy ultralytics' requirement -- no Provides: marker).
+# They install into the same cv2/ directory; pinning both to one version
+# keeps whichever lands last deterministic instead of version-skewed.
+
+# --- build toolchain ----------------------------------------------------------
+pyinstaller==6.22.2
+pyinstaller-hooks-contrib==2026.6
+setuptools==84.0.0
+
+# --- detection / re-id / ocr --------------------------------------------------
+ultralytics==8.4.121
+ultralytics-platform==0.1.5
+ultralytics-thop==2.1.6
+easyocr==1.7.2
+
+# --- numerics -----------------------------------------------------------------
+numpy==2.5.2
+scipy==1.18.0
+scikit-image==0.26.0
+sympy==1.14.0
+mpmath==1.3.0
+networkx==3.6.1
+
+# --- imaging ------------------------------------------------------------------
+opencv-python==5.0.0.93
+opencv-python-headless==5.0.0.93
+pillow==12.3.0
+imageio==2.37.4
+tifffile==2026.8.16
+lazy-loader==0.5
+
+# --- plotting (required by ultralytics; excluded from the frozen bundle) ------
+matplotlib==3.11.1
+contourpy==1.3.3
+cycler==0.12.1
+fonttools==4.63.0
+kiwisolver==1.5.0
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+six==1.17.0
+
+# --- misc runtime -------------------------------------------------------------
+polars==1.43.2            # hard requirement of ultralytics 8.4.x
+polars-runtime-32==1.43.2
+psutil==7.2.2             # CPU/RAM for the GUI resource bar
+nvidia-ml-py==13.610.43   # pynvml: GPU utilization/temp for the resource bar
+shapely==2.1.2
+pyclipper==1.4.0
+python-bidi==0.6.11
+PyYAML==6.0.3
+ninja==1.13.0
+
+# --- http / requests chain ----------------------------------------------------
+requests==2.34.2
+urllib3==2.7.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+idna==3.19
+httpx==0.28.1
+httpcore==1.0.9
+anyio==4.14.2
+h11==0.16.0
+
+# --- torch support packages (the wheels themselves come per-leg) ---------------
+filelock==3.32.3
+fsspec==2026.7.0
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+typing_extensions==4.16.0
+
+# --- shared plumbing -----------------------------------------------------------
+packaging==26.3
+colorama==0.4.6
+
+# --- tests (the build job runs the suite before packaging) ---------------------
+pytest==9.1.1
+iniconfig==2.3.0
+pluggy==1.6.0
+Pygments==2.21.0

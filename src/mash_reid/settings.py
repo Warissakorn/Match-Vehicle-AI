@@ -15,7 +15,7 @@ import json
 import logging
 import os
 
-import config
+from mash_reid import app_paths
 
 log = logging.getLogger(__name__)
 
@@ -48,9 +48,9 @@ _SCHEMA: dict[str, type] = {
 
 
 def default_path() -> str:
-    """``<project root>/settings.json`` -- next to ``config.py``."""
-    root = os.path.dirname(os.path.abspath(config.__file__))
-    return os.path.join(root, config.DEFAULT_SETTINGS_FILE)
+    """``settings.json``: next to ``config.py`` from source, the user data
+    directory in a frozen build -- see ``app_paths.settings_file``."""
+    return app_paths.settings_file()
 
 
 def load(path: str | None = None) -> dict:

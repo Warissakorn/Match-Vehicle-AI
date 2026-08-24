@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import config
+from mash_reid import app_paths
 from mash_reid.image_io import imread_unicode
 
 log = logging.getLogger(__name__)
@@ -245,9 +246,9 @@ def _parse_with_custom_pattern(text: str, compiled: "re.Pattern") -> datetime | 
 
 
 def default_patterns_path() -> str:
-    """``<project root>/ocr_patterns.json`` -- next to ``config.py``."""
-    root = os.path.dirname(os.path.abspath(config.__file__))
-    return os.path.join(root, config.DEFAULT_OCR_PATTERNS_FILE)
+    """Saved-patterns JSON: next to ``config.py`` from source, the user data
+    directory in a frozen build -- see ``app_paths.ocr_patterns_file``."""
+    return app_paths.ocr_patterns_file()
 
 
 def load_saved_patterns(path: str | None = None) -> dict[str, str]:
@@ -392,9 +393,29 @@ def get_reader(device: str | None = None):
     if reader is None:
         import easyocr  # heavy import, deferred
 
-        reader = easyocr.Reader(list(config.OCR_LANGUAGES), gpu=gpu)
+        # Frozen builds keep the one-time model download in the app's own
+        # data directory (survives updates; no writable dotfolder assumed);
+        # None keeps easyocr's historical ~/.EasyOCR default from source.
+        model_dir = app_paths.easyocr_model_dir()
+        kwargs = {"model_dir": model_dir} if model_dir else {}
+        reader = easyocr.Reader(list(config.OCR_LANGUAGES), gpu=gpu, **kwargs)
         _reader_cache[resolved] = reader
     return reader
+
+
+def prefetch_models() -> None:
+    """Download EasyOCR's detection/recognition models without keeping a Reader.
+
+    Used by the GUI's background first-run prefetch: creating a throwaway
+    CPU reader is what triggers the download; discarding it keeps its RAM
+    footprint out of the app until OCR actually runs. A later
+    :func:`get_reader` finds the files already on disk and starts instantly.
+    """
+    import easyocr  # heavy import, deferred
+
+    model_dir = app_paths.easyocr_model_dir()
+    kwargs = {"model_dir": model_dir} if model_dir else {}
+    easyocr.Reader(list(config.OCR_LANGUAGES), gpu=False, **kwargs)
 
 
 def find_overlay_region(image, reader, custom_pattern=None) -> tuple[int, int, int, int] | None:

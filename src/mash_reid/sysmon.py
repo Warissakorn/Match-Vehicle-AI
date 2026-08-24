@@ -14,6 +14,7 @@ used throughout this package.
 from __future__ import annotations
 
 import logging
+import threading
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +99,104 @@ def sample() -> dict:
         "gpu_mem_used_gb": gpu_used,
         "gpu_mem_total_gb": gpu_total,
     }
+
+
+class Sampler:
+    """Samples in a daemon thread; the UI thread just reads :meth:`latest`.
+
+    ``sample()`` looks cheap but isn't always: the GPU probes pull in torch
+    (a multi-second import on first call) and pynvml (whose init costs tens
+    of milliseconds -- and the old per-sample init/shutdown cycle ran that
+    every second). Polling from the Tk main thread therefore put real hiccups
+    into the event loop, worst of all during startup when the first poll
+    triggered the whole torch import.
+
+    The sampler owns all of that off-thread and keeps one persistent NVML
+    handle for its lifetime instead of cycling it. Callers get a dict back
+    immediately, every time; until the first tick completes the values are
+    simply all ``None``, which ``format_sample`` already renders as n/a.
+    """
+
+    _FIELDS = (
+        "cpu_percent", "ram_used_gb", "ram_total_gb",
+        "gpu_util_percent", "gpu_mem_used_gb", "gpu_mem_total_gb",
+    )
+
+    def __init__(self, interval_ms: int = 1000):
+        self._interval_s = max(0.2, interval_ms / 1000.0)
+        self._lock = threading.Lock()
+        self._latest: dict = dict.fromkeys(self._FIELDS)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        # Persistent NVML state: initialized once, reused every tick.
+        self._nvml = None            # module, once init succeeds
+        self._nvml_handle = None     # device 0, once init succeeds
+        self._nvml_dead = False      # no GPU/driver -- give up quietly
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, name="sysmon-sampler", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def latest(self) -> dict:
+        """The most recent snapshot; never blocks, never raises."""
+        with self._lock:
+            return dict(self._latest)
+
+    def _run(self) -> None:
+        while True:
+            snap = self._sample_once()
+            with self._lock:
+                self._latest = snap
+            if self._stop.wait(self._interval_s):
+                return
+
+    def _ensure_nvml(self) -> bool:
+        if self._nvml_handle is not None:
+            return True
+        if self._nvml_dead:
+            return False
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            self._nvml = pynvml
+            self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            return True
+        except Exception:
+            log.debug("pynvml unavailable; GPU utilization stays n/a",
+                      exc_info=True)
+            # A driver will not appear mid-session; retrying every tick would
+            # only spam NVML on GPU-less machines.
+            self._nvml_dead = True
+            return False
+
+    def _gpu_util(self) -> float | None:
+        if not self._ensure_nvml():
+            return None
+        try:
+            rates = self._nvml.nvmlDeviceGetUtilizationRates(self._nvml_handle)
+            return float(rates.gpu)
+        except Exception:
+            log.debug("pynvml utilization query failed", exc_info=True)
+            return None
+
+    def _sample_once(self) -> dict:
+        ram_used, ram_total = _ram_gb()
+        gpu_used, gpu_total = _gpu_memory_gb()
+        return {
+            "cpu_percent": _cpu_percent(),
+            "ram_used_gb": ram_used,
+            "ram_total_gb": ram_total,
+            "gpu_util_percent": self._gpu_util(),
+            "gpu_mem_used_gb": gpu_used,
+            "gpu_mem_total_gb": gpu_total,
+        }
 
 
 def format_sample(s: dict) -> str:

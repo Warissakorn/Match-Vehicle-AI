@@ -29,6 +29,14 @@ settings.json
 # User-saved OCR time patterns (see mash_reid.timestamp_ocr.save_patterns)
 ocr_patterns.json
 
+# Release stamp written by the build workflow just before PyInstaller runs
+# (read back at runtime by mash_reid.version)
+assets/_build_version.txt
+
+# PyInstaller output
+build/
+dist/
+
 # Sample / large media. The ** matters: a plain `samples/*.jpg` only matches
 # files directly in samples/, so frames sitting in the per-point subfolders
 # the extractor creates (samples/A/A1_frames_A/*.jpg) slipped past it and ~1 GB
