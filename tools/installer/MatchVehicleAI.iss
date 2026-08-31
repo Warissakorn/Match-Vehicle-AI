@@ -118,11 +118,14 @@ Type: filesandordirs; Name: "{app}\__pycache__"
 const
   NL = #13#10;
   { The literal GUID from [Setup]'s AppId, without the doubled braces that
-    section needs to escape Inno's own '{...}' constant syntax -- this is a
-    plain Pascal string, so a single pair is correct. Kept as its own
-    constant rather than typed twice: the uninstall registry key below and
-    AppId above have to stay byte-for-byte the same GUID or the lookup
-    silently finds nothing. }
+    section needs to escape Inno's own runtime-constant syntax -- this is a
+    plain Pascal string, so a single pair of braces around the GUID is
+    correct. Kept as its own constant rather than typed twice: the
+    uninstall registry key below and AppId above have to stay byte-for-byte
+    the same GUID or the lookup silently finds nothing. Do not quote a
+    brace pair inside a brace comment anywhere in this file -- Pascal
+    comments do not nest and are not escapable, so the comment closes at
+    the next close-brace and leaves the rest as live code. }
   AppUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F4C1E23-9B7A-4D62-A5E8-6C3F0B1D7A94}_is1';
 
 { Reads the previous installation's uninstaller path, checking both the
