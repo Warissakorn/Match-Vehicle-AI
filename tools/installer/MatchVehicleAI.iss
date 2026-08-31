@@ -28,6 +28,11 @@ AppVersion={#AppVersion}
 AppPublisher=Warissakorn
 AppSupportURL=https://github.com/Warissakorn/Match-Vehicle-AI
 DefaultDirName={autopf}\MatchVehicleAI
+; Explicit rather than relying on Inno's own default (which is also "no"):
+; the wizard's "Select Destination Location" page is a deliberate feature
+; here, not an oversight to silently lose if someone later adds a directive
+; that turns it off.
+DisableDirPage=no
 DefaultGroupName={#AppName}
 OutputBaseFilename=MatchVehicleAI-windows-installer
 OutputDir={#RepoRoot}
@@ -112,6 +117,87 @@ Type: filesandordirs; Name: "{app}\__pycache__"
   pair once keeps that '#' off the start of every line that needs a break. }
 const
   NL = #13#10;
+  { The literal GUID from [Setup]'s AppId, without the doubled braces that
+    section needs to escape Inno's own '{...}' constant syntax -- this is a
+    plain Pascal string, so a single pair is correct. Kept as its own
+    constant rather than typed twice: the uninstall registry key below and
+    AppId above have to stay byte-for-byte the same GUID or the lookup
+    silently finds nothing. }
+  AppUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F4C1E23-9B7A-4D62-A5E8-6C3F0B1D7A94}_is1';
+
+{ Reads the previous installation's uninstaller path, checking both the
+  per-user and machine-wide registry locations: PrivilegesRequiredOverridesAllowed
+  lets someone choose an admin install (HKLM) even though the default here is
+  per-user (HKCU), and an earlier run of this same setup could have gone
+  either way. Empty string means "not installed". }
+function GetExistingUninstallString(): String;
+var
+  Value: String;
+begin
+  Value := '';
+  if not RegQueryStringValue(HKLM, AppUninstallKey, 'UninstallString', Value) then
+    RegQueryStringValue(HKCU, AppUninstallKey, 'UninstallString', Value);
+  Result := Value;
+end;
+
+function GetExistingVersion(): String;
+var
+  Value: String;
+begin
+  Value := '';
+  if not RegQueryStringValue(HKLM, AppUninstallKey, 'DisplayVersion', Value) then
+    RegQueryStringValue(HKCU, AppUninstallKey, 'DisplayVersion', Value);
+  Result := Value;
+end;
+
+{ Detects an existing install up front and offers a real choice instead of
+  silently overwriting it: remove the old copy first (a clean upgrade),
+  leave it in place and install over it (repair -- reruns the file copy and
+  re-provisions the environment, useful if a previous install ended up
+  half-broken), or back out untouched. Runs before the wizard's first page
+  so the answer decides how installation proceeds, not after the user has
+  already clicked through everything. }
+function InitializeSetup(): Boolean;
+var
+  ExistingUninstaller, ExistingVersion, Prompt: String;
+  ResultCode, Choice: Integer;
+begin
+  Result := True;
+  ExistingUninstaller := GetExistingUninstallString();
+  if ExistingUninstaller = '' then
+    Exit;
+
+  ExistingVersion := GetExistingVersion();
+  Prompt := 'Match-Vehicle-AI';
+  if ExistingVersion <> '' then
+    Prompt := Prompt + ' ' + ExistingVersion;
+  Prompt := Prompt + ' is already installed.' + NL + NL +
+    'Yes    - remove the existing installation first, then install ' +
+    '{#AppVersion} cleanly.' + NL +
+    'No     - keep the existing files and install {#AppVersion} over them ' +
+    '(repair / reinstall in place).' + NL +
+    'Cancel - exit Setup without changing anything.';
+
+  Choice := MsgBox(Prompt, mbConfirmation, MB_YESNOCANCEL);
+  case Choice of
+    IDYES:
+      begin
+        ExistingUninstaller := RemoveQuotes(ExistingUninstaller);
+        if not Exec(ExistingUninstaller, '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES',
+                    '', SW_SHOW, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+        begin
+          MsgBox('Could not remove the existing installation, so Setup will ' +
+                 'exit. You can uninstall it manually from Windows Settings ' +
+                 'and run this installer again.', mbError, MB_OK);
+          Result := False;
+        end;
+      end;
+    IDCANCEL:
+      Result := False;
+    { IDNO falls through: keep the existing files, proceed to install/repair
+      over them. }
+  end;
+end;
 
 function ProvisionEnvironment(): Boolean;
 var

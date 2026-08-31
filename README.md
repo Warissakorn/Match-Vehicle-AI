@@ -108,12 +108,18 @@ around 2.5 GB — with uv's and pip's progress shown in a console window while
 it works.
 
 The installer is per-user by default (no administrator prompt) and installs
-under `%LOCALAPPDATA%\Programs\MatchVehicleAI`; choose a machine-wide
-location during setup if you would rather. Uninstall from **Settings → Apps**
+under `%LOCALAPPDATA%\Programs\MatchVehicleAI`; the setup wizard's
+"Select Destination Location" page lets you pick a different folder (or a
+machine-wide location) instead. Uninstall from **Settings → Apps**
 as usual — that removes the program and its Python environment but keeps
 your models, settings and logs, so reinstalling does not re-download the
 ~110 MB of model weights. Delete `%LOCALAPPDATA%\MatchVehicleAI` by hand to
 remove those too.
+
+Running the installer again while a copy is already installed asks what to
+do instead of silently overwriting it: remove the existing installation
+first and install cleanly, keep the existing files and reinstall/repair
+over them, or cancel without changing anything.
 
 The CUDA bundle is published as a single **`.7z`** archive: packed as an
 ordinary zip it would weigh ~2.7 GiB — over GitHub's hard 2 GiB per-release-
