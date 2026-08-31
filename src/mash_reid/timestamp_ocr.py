@@ -397,7 +397,7 @@ def get_reader(device: str | None = None):
         # data directory (survives updates; no writable dotfolder assumed);
         # None keeps easyocr's historical ~/.EasyOCR default from source.
         model_dir = app_paths.easyocr_model_dir()
-        kwargs = {"model_dir": model_dir} if model_dir else {}
+        kwargs = {"model_storage_directory": model_dir} if model_dir else {}
         reader = easyocr.Reader(list(config.OCR_LANGUAGES), gpu=gpu, **kwargs)
         _reader_cache[resolved] = reader
     return reader
@@ -414,7 +414,7 @@ def prefetch_models() -> None:
     import easyocr  # heavy import, deferred
 
     model_dir = app_paths.easyocr_model_dir()
-    kwargs = {"model_dir": model_dir} if model_dir else {}
+    kwargs = {"model_storage_directory": model_dir} if model_dir else {}
     easyocr.Reader(list(config.OCR_LANGUAGES), gpu=False, **kwargs)
 
 
