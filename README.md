@@ -19,6 +19,9 @@ frames @ B ┘                                                           │
                      cosine similarity + travel-time gate ─► ranked A→B matches
 ```
 
+ภาษาไทย: ดูสรุปโปรแกรม วิธีใช้งาน สัญญาอนุญาต และผู้พัฒนา ได้ที่
+[`docs/ABOUT.md`](docs/ABOUT.md) หรือกดปุ่ม "เกี่ยวกับ" ในหน้าโปรแกรมโดยตรง
+
 ## How it works
 
 | Stage | Module | What it does |

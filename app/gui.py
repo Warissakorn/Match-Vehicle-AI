@@ -770,6 +770,9 @@ class ReIDApp(ttk.Frame):
         self._theme_btn.pack(side="right", padx=(theme.PAD_L, 0))
         self._sync_theme_button()
 
+        ttk.Button(line, text=t("About"), style="Ghost.TButton",
+                  command=self._show_about).pack(side="right", padx=(theme.PAD_L, 0))
+
         lang_combo = ttk.Combobox(
             line, state="readonly", width=8,
             values=[i18n.display_name(c) for c in i18n.available()])
@@ -797,6 +800,9 @@ class ReIDApp(ttk.Frame):
         self.ui_theme.set(mode)
         self._sync_theme_button()
         self._save_settings()
+
+    def _show_about(self):
+        AboutDialog(self.winfo_toplevel())
 
     def _set_language(self, code: str):
         """Switch language: catalog, then fonts, then rebuild the window.
@@ -1699,6 +1705,81 @@ class VideoExtractDialog(tk.Toplevel):
         except queue.Empty:
             pass
         self.after(100, self._poll)
+
+
+class AboutDialog(tk.Toplevel):
+    """Program info: what it does, how to use it, license, developer.
+
+    Read-only reference shown from the status bar's "About" button, aimed at
+    someone who only has the installed app in front of them -- no repo, no
+    README -- and wants to know what this is, how to run a match, and under
+    what license it's distributed. Bilingual via ``t()``, same as every other
+    dialog here; the fuller English write-up lives in the repo's README.md
+    and docs/ABOUT.md for anyone who does have the source checkout.
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title(t("About Match-Vehicle-AI"))
+        self.geometry("560x520")
+        self.minsize(420, 360)
+        self._build()
+        self.transient(parent)
+        self.grab_set()
+
+    def _build(self):
+        header = ttk.Frame(self, padding=(theme.PAD_L, theme.PAD_L, theme.PAD_L, 0))
+        header.pack(fill="x")
+        ttk.Label(header, text=_window_title(), style="Section.TLabel",
+                  anchor="w", wraplength=500).pack(fill="x")
+        ttk.Label(header, text=f"{t('Version')}: {app_version.get_version()}",
+                  style="Status.TLabel", anchor="w").pack(fill="x", pady=(theme.PAD_S, 0))
+
+        body_frame = ttk.Frame(self, padding=theme.PAD_L)
+        body_frame.pack(fill="both", expand=True)
+        text = tk.Text(body_frame, wrap="word", height=10, borderwidth=0,
+                        highlightthickness=0)
+        scroll = ttk.Scrollbar(body_frame, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        sections = [
+            (t("What it is"), t(
+                "Match-Vehicle-AI matches the same physical vehicle as it passes "
+                "two separate camera points (A and B), using visual appearance "
+                "only -- no license-plate reading. It detects every vehicle in "
+                "each point's frames, turns each detection into an appearance "
+                "embedding, and ranks likely A-to-B matches by similarity, "
+                "gated by how long the trip between the two points can "
+                "plausibly take.")),
+            (t("How to use it"), t(
+                "1) Point A and Point B at folders of timestamped frames (or "
+                "extract them from video with \"From video...\"). "
+                "2) Check each point's clock with \"Fix times...\" -- matching "
+                "depends on accurate timestamps. "
+                "3) Pick a detection model and processing device. "
+                "4) Press Process. "
+                "5) Review the ranked A-to-B matches and their similarity "
+                "scores below.")),
+            (t("License"), t(
+                "AGPL-3.0. You may use, modify and redistribute this software "
+                "freely, but a distributed modified version -- including "
+                "running it as a network service for others -- must make its "
+                "complete source available under AGPL-3.0 too. See the LICENSE "
+                "file for the full text.")),
+            (t("Developer"), t(
+                "Developed by Warissakorn. Project page and issue tracker: "
+                "github.com/Warissakorn/Match-Vehicle-AI")),
+        ]
+        for heading, body in sections:
+            text.insert("end", heading + "\n", ("heading",))
+            text.insert("end", body + "\n\n")
+        text.tag_configure("heading", font=theme.FONTS.body_bold)
+        text.configure(state="disabled")
+
+        ttk.Button(self, text=t("Close"), command=self.destroy).pack(
+            pady=(0, theme.PAD_L))
 
 
 class ModelManagerDialog(tk.Toplevel):

@@ -42,6 +42,54 @@ TH: dict[str, str] = {
     "Match-Vehicle-AI  |  Cross-Point Vehicle Re-ID":
         "Match-Vehicle-AI  |  จับคู่ยานพาหนะข้ามจุดตรวจ",
     "Language": "ภาษา",
+    "About": "เกี่ยวกับ",
+    "About Match-Vehicle-AI": "เกี่ยวกับ Match-Vehicle-AI",
+    "Version": "เวอร์ชัน",
+    "What it is": "โปรแกรมนี้คืออะไร",
+    "How to use it": "วิธีใช้งาน",
+    "License": "สัญญาอนุญาต (License)",
+    "Developer": "ผู้พัฒนา",
+    "Match-Vehicle-AI matches the same physical vehicle as it passes "
+    "two separate camera points (A and B), using visual appearance "
+    "only -- no license-plate reading. It detects every vehicle in "
+    "each point's frames, turns each detection into an appearance "
+    "embedding, and ranks likely A-to-B matches by similarity, "
+    "gated by how long the trip between the two points can "
+    "plausibly take.":
+        "Match-Vehicle-AI จับคู่ยานพาหนะคันเดียวกันที่ผ่านกล้อง 2 จุด "
+        "(จุด A และจุด B) โดยใช้ลักษณะภายนอกของตัวรถเท่านั้น "
+        "ไม่มีการอ่านป้ายทะเบียน โปรแกรมจะตรวจจับยานพาหนะทุกคันในแต่ละจุด "
+        "แปลงเป็นเวกเตอร์คุณลักษณะ (embedding) แล้วจัดอันดับคู่ A-to-B "
+        "ที่น่าจะตรงกันตามความคล้ายกัน โดยมีเงื่อนไขระยะเวลาเดินทางที่เป็นไป"
+        "ได้จริงระหว่างสองจุดเป็นตัวกรอง",
+    "1) Point A and Point B at folders of timestamped frames (or "
+    "extract them from video with \"From video...\"). "
+    "2) Check each point's clock with \"Fix times...\" -- matching "
+    "depends on accurate timestamps. "
+    "3) Pick a detection model and processing device. "
+    "4) Press Process. "
+    "5) Review the ranked A-to-B matches and their similarity "
+    "scores below.":
+        "1) เลือกโฟลเดอร์ภาพนิ่งของจุด A และจุด B (หรือกด \"ดึงจากวิดีโอ...\" "
+        "เพื่อตัดภาพนิ่งจากไฟล์วิดีโอ) "
+        "2) ตรวจสอบเวลาของแต่ละจุดด้วยปุ่ม \"แก้ไขเวลา...\" เนื่องจากการจับคู่"
+        "ต้องอาศัยเวลาประทับที่ถูกต้อง "
+        "3) เลือกโมเดลตรวจจับและอุปกรณ์ประมวลผลที่ต้องการ "
+        "4) กดปุ่มประมวลผล (Process) "
+        "5) ตรวจสอบรายการคู่ A-to-B ที่จับคู่ได้พร้อมคะแนนความเหมือนด้านล่าง",
+    "AGPL-3.0. You may use, modify and redistribute this software "
+    "freely, but a distributed modified version -- including "
+    "running it as a network service for others -- must make its "
+    "complete source available under AGPL-3.0 too. See the LICENSE "
+    "file for the full text.":
+        "AGPL-3.0 ผู้ใช้สามารถใช้งาน ดัดแปลง และแจกจ่ายซอฟต์แวร์นี้ได้อย่าง"
+        "เสรี แต่หากแจกจ่ายเวอร์ชันที่ดัดแปลง — รวมถึงการให้บริการผ่านเครือ"
+        "ข่ายแก่ผู้อื่น — ต้องเปิดเผยซอร์สโค้ดฉบับสมบูรณ์ของเวอร์ชันนั้นภาย"
+        "ใต้สัญญาอนุญาต AGPL-3.0 เช่นกัน ดูฉบับเต็มได้ที่ไฟล์ LICENSE",
+    "Developed by Warissakorn. Project page and issue tracker: "
+    "github.com/Warissakorn/Match-Vehicle-AI":
+        "พัฒนาโดย Warissakorn หน้าโปรเจกต์และแจ้งปัญหาได้ที่ "
+        "github.com/Warissakorn/Match-Vehicle-AI",
     "◑ Dark": "◑ มืด",
     "◐ Light": "◐ สว่าง",
 
