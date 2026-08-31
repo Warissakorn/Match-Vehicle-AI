@@ -327,6 +327,12 @@ def test_the_video_extract_dialog_builds(gui):
     gui.VideoExtractDialog(app, "A", app.dir_a)
 
 
+def test_the_about_dialog_builds(gui):
+    gui.theme.apply(_Widget(), "light", "en")
+    app = gui.ReIDApp(_Widget())
+    gui.AboutDialog(app)
+
+
 def test_the_model_manager_dialog_builds(gui):
     gui.theme.apply(_Widget(), "light", "en")
     app = gui.ReIDApp(_Widget())
