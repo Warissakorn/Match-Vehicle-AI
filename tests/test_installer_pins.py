@@ -199,6 +199,7 @@ def test_setup_section_uses_no_invented_directives() -> None:
         "SetupIconFile", "Compression", "SolidCompression", "WizardStyle",
         "ArchitecturesAllowed", "ArchitecturesInstallIn64BitMode",
         "PrivilegesRequired", "PrivilegesRequiredOverridesAllowed",
+        "DisableDirPage",
     }
     section = re.search(r"^\[Setup\]\n(.*?)(?=^\[)", _read(_ISS), re.MULTILINE | re.DOTALL)
     assert section, "the .iss no longer has a [Setup] section"
