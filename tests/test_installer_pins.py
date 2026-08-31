@@ -207,6 +207,28 @@ def test_setup_section_uses_no_invented_directives() -> None:
     assert used <= known, f"unrecognised [Setup] directive(s): {sorted(used - known)}"
 
 
+def test_code_section_comments_do_not_contain_a_brace() -> None:
+    """No '{}' comment in [Code] contains a stray '{' or '}' of its own.
+
+    Pascal '{}' comments do not nest and cannot be escaped: the comment ends
+    at the very first '}', full stop. A comment that quotes something like
+    "Inno's own '{...}' syntax" therefore does not say what it looks like --
+    it closes at the '}' inside the quote, and everything after that up to
+    the next real '}' becomes live Pascal source, which reliably fails to
+    parse (this exact defect took down a release build). Guarding on '{'
+    inside a matched comment catches it: legitimate comment prose has no
+    reason to contain one, since the writer only means to open the comment
+    once.
+    """
+    code = re.search(r"^\[Code\]\n(.*)", _read(_ISS), re.MULTILINE | re.DOTALL)
+    assert code, "the .iss no longer has a [Code] section"
+    offenders = [m.group(0) for m in re.finditer(r"\{[^}]*\}", code.group(1)) if "{" in m.group(0)[1:]]
+    assert not offenders, (
+        f"comment(s) in [Code] contain a nested '{{' that closes the comment "
+        f"early at the next '}}': {offenders}"
+    )
+
+
 def test_code_section_concatenates_strings_explicitly() -> None:
     """No two string literals sit adjacent in the [Code] section.
 
